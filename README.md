@@ -1,2 +1,2 @@
-# Co-invasion-synthesis
-A global synthesis on ecological impacts of alien species’ co-invasions
+Data and R Scripts associated with the manuscript entitled "A global synthesis on ecological impacts of alien species’ co-invasions"
+

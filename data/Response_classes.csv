@@ -1,0 +1,29 @@
+Level,Response_class,Variables_included
+Species,Animal behaviour,Percentage survival; servival to metamorphosis; mortality
+Species,Animal development,Time to metamorphosis; Gosner stage
+Species,Animal growth,Mass of larvae; weight of single species
+Species,Plant fitness,Germination percentage; germination potential; germination rate index
+Species,Plant growth,Change in biomass (individual plant); increase in size of whole plant or specific parts
+Community,Animal abundance,Density; abundance
+Community,Animal production,Biomass
+Community,Animal richness,Number of animal species/taxa
+Community,Microbial diversity ,Diversity index; evenness
+Community,Microbial richness,Number of species/taxa; microbial number; OTU; sequence number
+Community,Plant abundance,Density; cover; abundance; dominance; basel area; number of individual
+Community,Plant diversity,Diversity; functional diversity; alpha diversity; evenness
+Community,Plant production,Chlorophyll content; biomass; gross primary production
+Community,Plant richness,Number of plant species/taxa
+Ecosystem,Microbial activity,Enzyme activity
+Ecosystem,C pools,Organic Carbon; total Carbon
+Ecosystem,Dissolved oxygen,Dissolved oxygen
+Ecosystem,Litter decomposition,Mass loss; decomposition rate
+Ecosystem,Macronutrients,"Soil Ca, K; Mg; Al"
+Ecosystem,Micronutrients,Soil B; Cu; Mn; Fe; Zn
+Ecosystem,N pools,Total nitrogen; ammonium; nitrate 
+Ecosystem,N/P,N:P ratio
+Ecosystem,P pools,Available Phosphorous; total Phosphorous
+Ecosystem,pH,pH (CaCl2); pH (KCl)
+Ecosystem,Salinity,Electrical conductivity; cation exchange capacity 
+Ecosystem,Soil moisture,Soil oisture; gravimetric water content
+Ecosystem,Soil OM,Soil organic matter content
+Ecosystem,Water Temperature ,Water temperature 

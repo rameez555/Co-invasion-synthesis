@@ -1,0 +1,1495 @@
+---
+title: "A global synthesis on ecological impacts of alien species' co-invasions"
+author: "Rameez Ahmad*, Showkeen A. Lone, Irfan Rashid, Anzar A. Khuroo"
+date: "Last updated: `r format(Sys.time(), '%d %B %Y')`"
+output:
+  html_document:
+    code_folding: hide
+    code_download: true
+    depth: 4
+    number_sections: yes
+    theme:  journal # “default”, “cerulean”, “cosmo”, “flatly”, “darkly”, “readable”, “spacelab”, “united”, “cosmo”, “lumen”, “paper”, “sandstone”, “simplex”, “yeti”
+    toc: yes
+    toc_float: yes
+    toc_depth: 4
+    link-citations: yes
+    bibliography: my_publications.bib
+    csl: journal-of-applied-ecology.csl
+    subtitle: Electronic Supplementary Material
+    always_allow_html: true
+---
+
+```{r setup, include = FALSE}
+# kniter setting
+knitr::opts_chunk$set(
+  message = FALSE,
+  warning = FALSE, # no warnings
+  cache = TRUE,
+  echo = TRUE
+)
+# cleaning up
+ rm(list=ls())
+```
+
+# General Introduction
+
+This supplementary material contains step by step information and explanation of methods used for literaturure search and data-analysis, along with the results reported within the main manuscript. 
+
+
+# Setups
+
+## Loading packages
+
+
+
+```{r}
+# install.packages("devtools")
+# install.packages("tidyverse")
+# install.packages("metafor")
+# install.packages("patchwork")
+# install.packages("R.rsp")
+# 
+# devtools::install_github("daniel1noble/orchaRd", force = TRUE)
+library(pacman)
+pacman::p_load(dplyr,
+               tidyr,
+               metafor, # main package for meta-analysis
+               broom,
+               tidyverse, 
+               rmarkdown,
+               readxl,
+               kableExtra,  # making nice tables
+               orchaRd,
+               patchwork, # putting ggplots together
+               sjPlot,
+               gridExtra, 
+               jtools,
+               ggtext,
+               purrr,
+               metaAidR, # for VCV matrix
+               corpcor,
+               R.rsp,
+               tibble, # nice tables
+               ggpubr, # arranging multipe ggplots
+               here,# making reading files easy
+               xfun
+               )
+```
+
+## Custom functions
+Some of the functions in this study were adopted from **[Atkinson et al. (2022)](https://doi.org/10.1111/ele.14025)**, **[Lopez et al. (2022)](https://doi.org/10.1073/pnas.211738911)** and **[Pottier et al. (2022)](https://doi.org/10.1111/ele.14083)**.
+
+```{r}
+
+get_pred1 <- function(model, mod = " ") {
+  name <- name <- firstup(as.character(stringr::str_replace(row.names(model$beta), 
+                                                            mod, "")))
+  len <- length(name)
+  
+  if (len != 1) {
+    newdata <- matrix(NA, ncol = len, nrow = len)
+    for (i in 1:len) {
+      pos <- which(model$X[, i] == 1)[[1]]
+      newdata[, i] <- model$X[pos, ]
+    }
+    pred <- metafor::predict.rma(model, newmods = newdata)
+  } else {
+    pred <- metafor::predict.rma(model)
+  }
+  estimate <- pred$pred
+  lowerCL <- pred$ci.lb
+  upperCL <- pred$ci.ub
+  lowerPR <- pred$cr.lb
+  upperPR <- pred$cr.ub
+  
+  table <- tibble(name = factor(name, levels = name, labels = name), estimate = estimate, 
+                  lowerCL = lowerCL, upperCL = upperCL, pval = model$pval, lowerPR = lowerPR, 
+                  upperPR = upperPR)
+}
+
+
+I2 <- function(model, method = c("Wolfgang", "Shinichi")) {
+    
+    ## evaluate choices
+    method <- match.arg(method)
+    
+    # Wolfgang's method
+    if (method == "Wolfgang") {
+        W <- solve(model$V)
+        X <- model.matrix(model)
+        P <- W - W %*% X %*% solve(t(X) %*% W %*% X) %*% t(X) %*% W
+        I2_total <- sum(model$sigma2)/(sum(model$sigma2) + (model$k - model$p)/sum(diag(P)))
+        I2_each <- model$sigma2/(sum(model$sigma2) + (model$k - model$p)/sum(diag(P)))
+        names(I2_each) = paste0("I2_", model$s.names)
+        
+        # putting all together
+        I2s <- c(I2_total = I2_total, I2_each)
+        
+        # or my way
+    } else {
+        # sigma2_v = typical sampling error variance
+        sigma2_v <- sum(1/model$vi) * (model$k - 1)/(sum(1/model$vi)^2 - sum((1/model$vi)^2))
+        I2_total <- sum(model$sigma2)/(sum(model$sigma2) + sigma2_v)  #s^2_t = total variance
+        I2_each <- model$sigma2/(sum(model$sigma2) + sigma2_v)
+        names(I2_each) = paste0("I2_", model$s.names)
+        
+        # putting all together
+        I2s <- c(I2_total = I2_total, I2_each)
+    }
+    return(I2s)
+}
+
+my.orchard<- function (object, mod = "1", group, data, xlab, N = "none", 
+    alpha = 0.5, angle = 90, cb = FALSE, k = TRUE, g = TRUE, 
+    trunk.size = 4, branch.size = 1.5, twig.size = 0.8, whisker, transfm = c("none", # increased point size, branch size, and added a whisker argument
+        "tanh"), condition.lab = "Condition", legend.pos = "bottom.right", k.pos = c("right", 
+        "left")) 
+{
+    transfm <- match.arg(transfm)
+    if (any(class(object) %in% c("rma.mv", "rma"))) {
+        if (mod != "1") {
+            results <- orchaRd::mod_results(object, mod, group, 
+                data)
+        }
+        else {
+            results <- orchaRd::mod_results(object, mod = "1", 
+                group, data)
+        }
+    }
+    if (any(class(object) %in% c("orchard"))) {
+        results <- object
+    }
+    mod_table <- results$mod_table
+    data <- results$data
+    data$moderator <- factor(data$moderator, levels = mod_table$name, 
+        labels = mod_table$name)
+    data$scale <- (1/sqrt(data[, "vi"]))
+    legend <- "Precision (1/SE)"
+    if (any(N != "none")) {
+        data$scale <- N
+        legend <- "Sample Size (N)"
+    }
+    if (transfm == "tanh") {
+        cols <- sapply(mod_table, is.numeric)
+        mod_table[, cols] <- Zr_to_r(mod_table[, cols])
+        data$yi <- Zr_to_r(data$yi)
+        label <- xlab
+    }
+    else {
+        label <- xlab
+    }
+    mod_table$K <- as.vector(by(data, data[, "moderator"], 
+        function(x) length(x[, "yi"])))
+    mod_table$g <- as.vector(num_studies(data, moderator, stdy)[, 
+        2])
+    group_no <- length(unique(mod_table[, "name"]))
+    cbpl <- c("#88CCEE", "#CC6677", "#DDCC77", 
+        "#117733", "#332288", "#AA4499", "#44AA99", 
+        "#999933", "#882255", "#661100", "#6699CC", 
+        "#888888", "#E69F00", "#56B4E9", "#009E73", 
+        "#F0E442", "#0072B2", "#D55E00", "#CC79A7", 
+        "#999999")
+    if (names(mod_table)[2] == "condition") {
+        condition_no <- length(unique(mod_table[, "condition"]))
+        plot <- ggplot2::ggplot() + ggbeeswarm::geom_quasirandom(data = data, 
+            ggplot2::aes(y = yi, x = moderator, size = scale, 
+                colour = moderator), alpha = alpha) + ggplot2::geom_hline(yintercept = 0, 
+            linetype = 2, colour = "black", alpha = alpha) + 
+            ggplot2::geom_linerange(data = mod_table, ggplot2::aes(x = name, 
+                ymin = lowerCL, ymax = upperCL), size = branch.size, 
+                position = ggplot2::position_dodge2(width = 0.3)) + 
+            ggplot2::geom_pointrange(data = mod_table, ggplot2::aes(y = estimate, 
+                x = name, ymin = lowerPR, ymax = upperPR, shape = as.factor(condition), 
+                fill = name), size = twig.size, position = ggplot2::position_dodge2(width = 0.3), 
+                fatten = trunk.size) + ggplot2::scale_shape_manual(values = 20 + 
+            (1:condition_no)) + ggplot2::coord_flip() + ggplot2::theme_bw() + 
+            ggplot2::guides(fill = "none", colour = "none") + 
+            ggplot2::theme(legend.position = c(0, 1), legend.justification = c(0, 
+                1)) + ggplot2::theme(legend.title = ggplot2::element_text(size = 9)) + 
+            ggplot2::theme(legend.direction = "horizontal") + 
+            ggplot2::theme(legend.background = ggplot2::element_blank()) + 
+            ggplot2::labs(y = label, x = "", size = legend) + 
+            ggplot2::labs(shape = condition.lab) + ggplot2::theme(axis.text.y = ggplot2::element_text(size = 10, 
+            colour = "black", hjust = 0.5, angle = angle))
+    }
+    else {
+        plot <- ggplot2::ggplot() + ggbeeswarm::geom_quasirandom(data = data, 
+            ggplot2::aes(y = yi, x = moderator, size = scale, 
+                fill = moderator), alpha = alpha, width=0.4, pch=21, stroke=1.1, col="black") + # Change point shape (21, with black borders)
+            ggplot2::geom_hline(yintercept = 0, 
+            linetype = 2, colour = "black", alpha = 0.3, lwd=1.3) + # Change thickness 0 line
+            ggplot2::geom_errorbar(data = mod_table, ggplot2::aes(x = name, 
+                ymin = lowerCL, ymax = upperCL), size = branch.size, width= whisker) + # Added variable whisker size
+            ggplot2::geom_pointrange(data = mod_table, ggplot2::aes(y = estimate, 
+                x = name, ymin = lowerPR, ymax = upperPR, fill = name), 
+                size = twig.size, fatten = trunk.size, shape = 23, stroke=2.2) + # Change point shape
+            scale_size_continuous(range = c(1, 14))+ # change point scaling
+            ggplot2::coord_flip() + 
+            ggplot2::theme_bw() + 
+            ggplot2::guides(fill = "none", colour = "none") + 
+            ggplot2::theme(text=element_text(size=26, colour="black"))+ # Change font size
+            ggplot2::theme(legend.title = ggplot2::element_text(size = 16)) + # Increased font legend title
+            ggplot2::theme(legend.text = ggplot2::element_text(size = 14)) +
+            ggplot2::theme(legend.direction = "horizontal") + 
+            ggplot2::theme(legend.background = ggplot2::element_blank()) + 
+            ggplot2::labs(y = label, x = "", size = legend) + 
+            ggplot2::theme(axis.text.y = ggplot2::element_text(size = 20, 
+                colour = "black", hjust = 0.5, angle = angle)) + # Increased size title axis label
+            ggplot2::theme(axis.text.x = ggplot2::element_text(size = 20, colour = "black")) + # Increase size axis ticks
+            ggplot2::theme(panel.border = element_rect(colour = "black", fill=NA, size=1.3))
+            
+    }
+    if (legend.pos == "bottom.right") {
+        plot <- plot + ggplot2::theme(legend.position = c(1, 
+            0), legend.justification = c(1, 0))
+    }
+    else if (legend.pos == "bottom.left") {
+        plot <- plot + ggplot2::theme(legend.position = c(0, 
+            0), legend.justification = c(0, 0))
+    }
+    else if (legend.pos == "top.right") {
+        plot <- plot + ggplot2::theme(legend.position = c(1, 
+            1), legend.justification = c(1, 1))
+    }
+    else if (legend.pos == "top.left") {
+        plot <- plot + ggplot2::theme(legend.position = c(0, 
+            1), legend.justification = c(0, 1))
+    }
+    else if (legend.pos == "top.out") {
+        plot <- plot + ggplot2::theme(legend.position = "top")
+    }
+    else if (legend.pos == "bottom.out") {
+        plot <- plot + ggplot2::theme(legend.position = "bottom")
+    }
+    if (cb == TRUE) {
+        plot <- plot + ggplot2::scale_fill_manual(values = cbpl) + 
+            ggplot2::scale_colour_manual(values = cbpl)
+    }
+    if (k == TRUE && g == FALSE && k.pos == "right") {
+        plot <- plot + ggplot2::annotate("text", y = (max(data$yi) + 
+            (max(data$yi) * 0.1)), x = (seq(1, group_no, 1) + 
+            0), label = paste("italic(k)==", mod_table$K[1:group_no]), # Size changed to 5.5
+            parse = TRUE, hjust = "right", size = 6.5)
+    }
+    else if (k == TRUE && g == FALSE && k.pos == "left") {
+        plot <- plot + ggplot2::annotate("text", y = (min(data$yi) + 
+            (min(data$yi) * 0.1)), x = (seq(1, group_no, 1) + 
+            0), label = paste("italic(k)==", mod_table$K[1:group_no]), 
+            parse = TRUE, hjust = "left", size = 6.5) # Size changed to 5.5
+    }
+    else if (k == TRUE && g == TRUE && k.pos == "right") {
+        plot <- plot + ggplot2::annotate("text", y = (max(data$yi) + 
+            (max(data$yi) * 0.1)), x = (seq(1, group_no, 1) + 
+            0), label = paste("italic(k)==", mod_table$K[1:group_no], 
+            " (", mod_table$g[1:group_no], ")"), 
+            parse = TRUE, hjust = "right", size = 6.5) # Size changed to 5.5
+    }
+    else if (k == TRUE && g == TRUE && k.pos == "left") {
+        plot <- plot + ggplot2::annotate("text", y = (min(data$yi) + 
+            (min(data$yi) * 0.1)), x = (seq(1, group_no, 1) + 
+            0), label = paste("italic(k)==", mod_table$K[1:group_no], 
+            " (", mod_table$g[1:group_no], ")"), 
+            parse = TRUE, hjust = "left", size = 6.5) # Size changed to 5.5
+    }
+    return(plot)
+}
+
+
+
+my.orchard1<- function (object, mod = "1", group, data, xlab, N = "none", 
+                       alpha = 0.5, angle = 0, cb = FALSE, k = TRUE, g = TRUE, 
+                       trunk.size = 5, branch.size = 2, twig.size = 0.8, whisker, transfm = c("none", # increased point size, branch size, and added a whisker argument
+                                                                                              "tanh"), condition.lab = "Condition", legend.pos = "bottom.right", k.pos = c("right", 
+                                                                                                                                                                           "left")) 
+{
+  transfm <- match.arg(transfm)
+  if (any(class(object) %in% c("rma.mv", "rma"))) {
+    if (mod != "1") {
+      results <- orchaRd::mod_results(object, mod, group, 
+                                      data)
+    }
+    else {
+      results <- orchaRd::mod_results(object, mod = "1", 
+                                      group, data)
+    }
+  }
+  if (any(class(object) %in% c("orchard"))) {
+    results <- object
+  }
+  mod_table <- results$mod_table
+  data <- results$data
+  data$moderator <- factor(data$moderator, levels = mod_table$name, 
+                           labels = mod_table$name)
+  data$scale <- (1/sqrt(data[, "vi"]))
+  legend <- "Precision (1/SE)"
+  if (any(N != "none")) {
+    data$scale <- N
+    legend <- "Sample Size (N)"
+  }
+  if (transfm == "tanh") {
+    cols <- sapply(mod_table, is.numeric)
+    mod_table[, cols] <- Zr_to_r(mod_table[, cols])
+    data$yi <- Zr_to_r(data$yi)
+    label <- xlab
+  }
+  else {
+    label <- xlab
+  }
+  mod_table$K <- as.vector(by(data, data[, "moderator"], 
+                              function(x) length(x[, "yi"])))
+  mod_table$g <- as.vector(num_studies(data, moderator, stdy)[,2])
+  group_no <- length(unique(mod_table[, "name"]))
+  cbpl <- c("#E69F00", "#E69F00", "#E69F00", "#E69F00", "#E69F00", "#E69F00", "#E69F00",
+            "#E69F00", "#E69F00", "#E69F00", "#E69F00", "#E69F00", "#009E73", "#009E73", "#009E73", "#009E73",
+            "#009E73", "#009E73", "#009E73", "#009E73", "#009E73", "#CC00FFFF", "#CC00FFFF", "#CC00FFFF",
+            "#CC00FFFF", "#CC00FFFF") 
+  if (names(mod_table)[2] == "condition") {
+    condition_no <- length(unique(mod_table[, "condition"]))
+    plot <- ggplot2::ggplot() + ggbeeswarm::geom_quasirandom(data = data, 
+                                                             ggplot2::aes(y = yi, x = moderator, size = scale, 
+                                                                          colour = moderator), alpha = alpha) + ggplot2::geom_hline(yintercept = 0, 
+                                                                                                                                    linetype = 2, colour = "black", alpha = alpha) + 
+      ggplot2::geom_linerange(data = mod_table, ggplot2::aes(x = name, 
+                                                             ymin = lowerCL, ymax = upperCL), size = branch.size, 
+                              position = ggplot2::position_dodge2(width = 0.3)) + 
+      ggplot2::geom_pointrange(data = mod_table, ggplot2::aes(y = estimate, 
+                                                              x = name, ymin = lowerPR, ymax = upperPR, shape = as.factor(condition), 
+                                                              fill = name), size = twig.size, position = ggplot2::position_dodge2(width = 0.3), 
+                               fatten = trunk.size) + ggplot2::scale_shape_manual(values = 20 + 
+                                                                                    (1:condition_no)) + ggplot2::coord_flip() + ggplot2::theme_bw() + 
+      ggplot2::guides(fill = "none", colour = "none") + 
+      ggplot2::theme(legend.position = c(0, 1), legend.justification = c(0, 
+                                                                         1)) + ggplot2::theme(legend.title = ggplot2::element_text(size = 9)) + 
+      ggplot2::theme(legend.direction = "horizontal") + 
+      ggplot2::theme(legend.background = ggplot2::element_blank()) + 
+      ggplot2::labs(y = label, x = "", size = legend) + 
+      ggplot2::labs(shape = condition.lab) + ggplot2::theme(axis.text.y = ggplot2::element_text(size = 12, 
+                                                                                                colour = "black", hjust = 0.5, angle = angle))
+  }
+  else {
+    plot <- ggplot2::ggplot() + ggbeeswarm::geom_quasirandom(data = data, 
+                                                             ggplot2::aes(y = yi, x = moderator, size = scale, 
+                                                                          fill = moderator), alpha = alpha, width=0.4, pch=21, stroke=1.1, col="black") + # Change point shape (21, with black borders)
+      ggplot2::geom_hline(yintercept = 0, 
+                          linetype = 2, colour = "black", alpha = 0.3, lwd=1.3) + # Change thickness 0 line
+      ggplot2::geom_errorbar(data = mod_table, ggplot2::aes(x = name, 
+                                                            ymin = lowerCL, ymax = upperCL), size = branch.size, width= whisker) + # Added variable whisker size
+      ggplot2::geom_pointrange(data = mod_table, ggplot2::aes(y = estimate, 
+                                                              x = name, ymin = lowerPR, ymax = upperPR, fill = name), 
+                               size = twig.size, fatten = trunk.size, shape = 23, stroke=2.2) + # Change point shape
+      scale_size_continuous(range = c(1, 14))+ # change point scaling
+      ggplot2::coord_flip() + 
+      ggplot2::theme_bw() + 
+      ggplot2::guides(fill = "none", colour = "none") + 
+      ggplot2::theme(text=element_text(size=26, colour="black"))+ # Change font size
+      ggplot2::theme(legend.title = ggplot2::element_text(size = 16)) + # Increased font legend title
+      ggplot2::theme(legend.text = ggplot2::element_text(size = 14)) +
+      ggplot2::theme(legend.direction = "horizontal") + 
+      ggplot2::theme(legend.background = ggplot2::element_blank()) + 
+      ggplot2::labs(y = label, x = "", size = legend) + 
+      ggplot2::theme(axis.text.y = ggplot2::element_text(size = 14, 
+                                                         colour = "black", hjust = 0.5, angle = angle)) + # Increased size title axis label
+      ggplot2::theme(axis.text.x = ggplot2::element_text(size = 20)) + # Increase size axis ticks
+      ggplot2::theme(panel.border = element_rect(colour = "black", fill=NA, size=1.3))
+    
+  }
+  if (legend.pos == "bottom.right") {
+    plot <- plot + ggplot2::theme(legend.position = c(1, 
+                                                      0), legend.justification = c(1, 0))
+  }
+  else if (legend.pos == "bottom.left") {
+    plot <- plot + ggplot2::theme(legend.position = c(0, 
+                                                      0), legend.justification = c(0, 0))
+  }
+  else if (legend.pos == "top.right") {
+    plot <- plot + ggplot2::theme(legend.position = c(1, 
+                                                      1), legend.justification = c(1, 1))
+  }
+  else if (legend.pos == "top.left") {
+    plot <- plot + ggplot2::theme(legend.position = c(0, 
+                                                      1), legend.justification = c(0, 1))
+  }
+  else if (legend.pos == "top.out") {
+    plot <- plot + ggplot2::theme(legend.position = "top")
+  }
+  else if (legend.pos == "bottom.out") {
+    plot <- plot + ggplot2::theme(legend.position = "bottom")
+  }
+  if (cb == TRUE) {
+    plot <- plot + ggplot2::scale_fill_manual(values = cbpl) + 
+      ggplot2::scale_colour_manual(values = cbpl)
+  }
+  if (k == TRUE && g == FALSE && k.pos == "right") {
+    plot <- plot + ggplot2::annotate("text", y = (max(data$yi) + 
+                                                    (max(data$yi) * 0.1)), x = (seq(1, group_no, 1) + 
+                                                                                  0), label = paste("italic(k)==", mod_table$K[1:group_no]), # Size changed to 5.5
+                                     parse = TRUE, hjust = "right", size = 4.5)
+  }
+  else if (k == TRUE && g == FALSE && k.pos == "left") {
+    plot <- plot + ggplot2::annotate("text", y = (min(data$yi) + 
+                                                    (min(data$yi) * 0.1)), x = (seq(1, group_no, 1) + 
+                                                                                  0), label = paste("italic(k)==", mod_table$K[1:group_no]), 
+                                     parse = TRUE, hjust = "left", size = 4.5) # Size changed to 5.5
+  }
+  else if (k == TRUE && g == TRUE && k.pos == "right") {
+    plot <- plot + ggplot2::annotate("text", y = (max(data$yi) + 
+                                                    (max(data$yi) * 0.1)), x = (seq(1, group_no, 1) + 
+                                                                                  0), label = paste("italic(k)==", mod_table$K[1:group_no], 
+                                                                                                      " (", mod_table$g[1:group_no], ")"), 
+                                     parse = TRUE, hjust = "right", size = 4.5) # Size changed to 5.5
+  }
+  else if (k == TRUE && g == TRUE && k.pos == "left") {
+    plot <- plot + ggplot2::annotate("text", y = (min(data$yi) + 
+                                                    (min(data$yi) * 0.1)), x = (seq(1, group_no, 1) + 
+                                                                                  0.1), label = paste("italic(k)==", mod_table$K[1:group_no], 
+                                                                                                      " (", mod_table$g[1:group_no], ")"), 
+                                     parse = TRUE, hjust = "left", size = 4.5) # Size changed to 5.5
+  }
+  return(plot)
+}
+
+```
+
+
+# Literature search
+
+A comprehensive literature search for studies evaluating individual and combined impacts of co-occuring invasive species was conduvted on the Web of Science (WoS) core collection platform on 11 June, 2022  (Timespan: all years) using the search string: (("Co-occurring inva\*" OR "Co-occurring exotic" OR "Co-occurring non-native" OR "Co-occurring alien" OR "Co-occurring introduced" OR "Co-occurring non-indigenous" OR "Cooccurring inva\*" OR "Cooccurring exotic" OR "Cooccurring non-native" OR "Co-occurring non native" OR "Cooccurring non native" OR "Cooccurring alien" OR "Cooccurring introduced" OR "Cooccurring non-indigenous" OR "Co-occurring non indigenous" OR "Concurring inva\*" OR "Concurring exotic" OR "Concurring non-native" OR "Concurring non native" OR "Concurring alien" OR "Concurring introduced" OR "Concurring non-indigenous" OR "Concurring non indigenous" OR "multi\* inva\*" OR "multi\* exotic" OR "multi\* non-native" OR " multi\* non native" OR " multi\* alien" OR "multi\* introduced" OR "multi\* non-indigenous" OR " multi\* non indigenous" OR "Co-inva\*") AND ("impact\*" OR "effect\*" OR "modif\*" OR "change\*" OR "influence\*") AND ("richness" OR "diversity" OR "community structure\*" OR "community assemblage\*" OR "ecosystem structure" OR "ecosystem function\*" OR "population\*" OR "composition\*" OR "ecosystem process\*" OR "ecosystem pool\*" OR "ecosystem flux\*" OR "competition\*" OR "evenness" OR "biodiversity" OR "biological diversity" OR "abundance\*" OR "biomass" OR "producti\*" OR "growth" OR "cover" OR "densit\*" OR "species abundance distribution\*" OR "biogeochemical" OR "nutrient cycl\*" OR "cycling of nutrient\*" OR "nutrient dynamics" OR "nutrient flux\*" OR "nutrient pool\*" OR "flux\* of nutrient\*" OR "carbon" OR "nitrogen" OR "phosphorous" OR "pH" OR "organic matter" OR "decomposition" OR "litter" OR "soil" OR "hydrolog\*" OR "water"  OR "resource\*" OR "mycorrhiza" OR "bacteria" OR "fung\*" OR "microb\*")). The retrieved literature was screened for possibility of duplicate and irrelevant studies using the revtools package **[(Westgate, 2019)](https://doi.org/10.1002/jrsm.1374)**. Second, using the included articles from WoS as seed, we searched the backward references and forward citations of these selected articles on July 17, 2022, using the citationchaser package **[(Haddaway et al., 2022)](https://doi.org/10.1002/jrsm.1563)** to identify additional articles that might have been missed in the WoS search. Third, we also searched references and citations of previously published reviews on invasive species interactions and invasional meltdown (**[Simberloff & Von Holle, 1999](https://doi.org/10.1023/A:1010086329619)**; **[Ballari et al., 2016](https://peerj.com/articles/2029/)**; **[Jackson, 2015](https://doi.org/10.1890/15-0171.1)**; **[Kuebbing et al., 2013](https://doi.org/10.1016/j.biocon.2013.01.009)**; **[Kuebbing & Nunez, 2015](https://doi.org/10.1111/gcb.12711)**; **[2016](https://www.nature.com/articles/nplants2016134)**) to obtain additional relevant studies. The numbers of articles retrieved during the literature searches and those included as well as excluded at each stage of screeming process are shown in figure 1 (PRISMA flow diagram). 
+
+All the screening was performed by the lead author **RA**.
+
+  
+We followed reporting guidelines outlined in the PRISMA-EcoEvo checklist **[(O'Dea et al., 2021)](https://doi.org/10.1111/brv.12721)**.
+![](PRISMA.jpg)
+**Figure 1 (main manuscript).** PRISMA flow diagram showing the screening process along with reasons for excluding studies.
+
+## The  co-invasion impact dataset
+
+### Table of the dataset
+
+The dataset used for our meta-analysis and vote counting is presented below along with the discription of each variables included (variables not included in our meta-analysis or vote counting are shown by *).
+
+```{r data-set}
+# getting the data into R emvironment
+full_data<- read.csv("data/co-invasion_data_extracted.csv")
+
+# making a scrollable table of dataset
+kable(full_data, "html") %>%
+ kable_styling("striped", position = "left") %>%
+ scroll_box(width = "850px", height = "300px")
+```
+
+`Citation*`:  Reference of the paper included.
+
+`PR.ID`: Unique ID for each paper included.
+
+`Year`: Publication year of the paper.
+
+`ES.ID`: Unique ID for each row of data (i.e., effect size or observation).
+
+`CHT.ID`: Unique ID for each cohort (i.e., observation from same experimental plot, locality etc).
+
+`Ecosystem_type`: Ecosystem were study was conducted.
+
+`Longitude`: Longitude of the location were study was conducted in decimal degrees.
+
+`Latitude`: Latitude of the location were study was conducted decimal degrees.
+
+`Study_design`: Method of performing the study (i.e., Observational or experimental).
+
+`Study*`: Nature of study, (i.e., whether aquatic or terrestrial) 
+
+`Continent`: Name of the continent in which the study was carried out.
+
+`Region*`: Name of the locality in which the study was carried out.
+
+`Country*`: Name of the country in which the study was carried out.
+
+`Climate*`: Main climate of the region in which the study was carried out.
+
+`Source`: Location in the paper where from the data was collected (i.e., Text, Table or Figure).
+
+`Variable*`: Name of the parameter for which data was extracted.
+
+`Impact_type`: Classification of the parameter (i.e. variables) into broader response class.
+
+
+`Level_ecological_organization`: Classification of the parameter (i.e. variables) based on hierarchical organisation.
+
+`Invader_1*`: Identity of the first invader in co-invaded condition.
+
+`Invader_2*`: Identity of the second invader in co-invaded condition.
+
+`Interacting_taxon`: Identity of the interacting taxonomic class.
+
+`Trohic_level*`: Position of the interacting taxons along food web.
+
+`nI1`: Sample size in the invader 1 invaded plot.
+
+`mI1`: Mean value of variable in the invader 1 invaded plot.
+
+`sdI1`: Standard deviation of variable in the invader 1 invaded plot.
+
+`nI2`: Sample size in the invader 2 invaded plot.
+
+`mI2`: Mean value of variable in the invader 2 invaded plot.
+
+`sdI2`: Standard deviation of variable in the invader 2 invaded plot.
+
+`nI1_I2`: Sample size in the co-invaded plot (i.e. both invaders present ).
+
+`mI1_I2`: Mean value of variable in the the co-invaded plot.
+
+`sdI1_I2`: Standard deviation of variable in the the co-invaded plot.
+
+`nC`: Sample size in the control (i.e., uninvaded) plot.
+
+`mC`: Mean value of variable in the control plot.
+
+`sdC`: Standard deviation of variable in the control  plot.
+
+`num_shared_control`: Number of times the control was shared in the study.
+
+`N_control_sc`: Modified sample size for the control plot to account for the shared control dependence (calculated by dividing overall sample size for the shared control group by the total number of shared controls).
+
+### Levels of Ecological organization and response classes
+We classified each of the studied ecological variable into three levels of ecological organization based on whether impacts are related to species, resident communities, or ecosystem properties and functioning. Also, we categorized the studied variables into 28 response classes (i.e., impact types) modified after **[Vila et al. (2011)](https://doi.org/10.1111/j.1461-0248.2011.01628.x)** and **[Cameron et al. (2016)](https://doi.org/10.1111/geb.12436)** (see Table S1 below). 
+
+**Table S1**: Categorization of the studied ecological variables into different response classes (impact types) and three levels of ecological organization. 
+```{r}
+# getting the data into R emvironment
+response_classes <- read.csv("data/Response_classes.csv")
+
+# making a scrollable table of dataset
+kable(response_classes, "html") %>%
+ kable_styling("striped", position = "left") %>%
+ scroll_box(width = "850px", height = "200px")
+```
+
+
+### Counting observations and studies
+The summarized information about the number of observations and studies according to different studied factors are presented below. 
+
+**Table S2**: Number of observations and studies by continent.
+```{r}
+full_data %>% group_by(Continent) %>% summarise(`Number of observations` = n(),
+                                                `Number of studies` = n_distinct(PR.ID)) %>%
+  kable("html")  %>% 
+  kable_styling("striped", position = "left")%>%
+  scroll_box(width = "850px", height = "200px")
+```
+
+**Table S3**: Number of observations and studies by ecosystem type.
+```{r}
+full_data %>% group_by(Ecosystem_type) %>% summarise(`Number of observations` = n(),
+                                                `Number of studies` = n_distinct(PR.ID)) %>%
+  kable("html")  %>% 
+  kable_styling("striped", position = "left")%>%
+  scroll_box(width = "850px", height = "200px")
+```
+
+**Table S4**: Number of observations and studies by response class (i.e., impact type).
+```{r}
+full_data %>% group_by(Impact_type) %>% summarise(`Number of observations` = n(),
+                                                `Number of studies` = n_distinct(PR.ID)) %>%
+  kable("html")  %>% 
+  kable_styling("striped", position = "left")%>%
+  scroll_box(width = "850px", height = "200px")
+```
+
+**Table S5**: Number of observations and studies by Levels of ecological organization.
+```{r}
+full_data %>% group_by(Level_ecological_organization) %>% summarise(`Number of observations` = n(),
+                                                `Number of studies` = n_distinct(PR.ID)) %>%
+  kable("html")  %>% 
+  kable_styling("striped", position = "left")%>%
+  scroll_box(width = "850px", height = "150px")
+```
+
+
+# Meta-analysis
+## Calculating effect sizes
+
+To quantify the combined effect for each observation in the dataset, we used the Hedges' *d* as an effect size estimator. Each of the calculated combined effect sizes was based on the difference between the actual observed net impact of co-invaders against a predicted additive outcome based on the sum of each invader's independent effects **[(Jackson et al., 2016)](https://doi.org/10.1111/gcb.13028)**. For each of the included response variable (X), the predicted additive effect of the two invaders (p) from the four treatment groups (i.e., control (C), invader 1 (1), invader 2 (2) and both invaders 1 and 2 (12) was calculated as:
+                      p = (X1-Xc) + (X2-Xc) + Xc
+
+We also make use of the `make_VCV_matrix` function from the `metaAidR` package to calculate the variance-covariance matrix assuming a correlation of 0.5 for use in the meta-analytical model instead of the error term `vi` to overcome the dependence of sampling errors resulting from multiple outcomes **[(Noble et al., 2017)](https://doi.org/10.1111/mec.14031)**. This was considered because when more than one effect size is reported from the same experimental unit (cohort) (i.e., different metrics measured in the same quadrat or different nutrients estimated from the same soil sample), the sampling error of these effect sizes will be correlated. Also, in certain cases in our dataset, more than one treatment groups were compared to the same control group, the sampling error of the effect sizes is considered to be correlated. To overcome this dependence of sampling errors arising because of shared control problem, we calculated  a modified sample size (n) for shared control groups by dividing the original sample size of the control group by the number of shared controls and used the modified sample size for effect size calculation **[(Higgins et al., 2019)](https://training.cochrane.org/handbook/archive/v6)**.
+
+```{r}
+
+# import the data file
+data_all <- read.csv("data/co-invasion_data_extracted.csv")
+
+# remove cases from the data where control SD = 0,  that usually results in having vi=NA 
+data<-data_all %>% filter(sdC != 0)
+
+# Effect size calculation based on **[(Koricheva et al., 2013)](https://press.princeton.edu/books/hardcover/9780691137285/handbook-of-meta-analysis-in-ecology-and-evolution)** 
+
+# Calculating J's for treatments    ## correction for small sample sizes
+data$J_inv1 <- 1 - (3/(4*(data$nI1 + data$N_control_sc - 2) - 1))
+data$J_inv2 <- 1 - (3/(4*(data$nI2 + data$N_control_sc - 2) - 1))
+data$J_inv1_inv2 <- 1 - (3/(4*(data$nI1_I2 + data$N_control_sc - 2) - 1))
+
+# S's for treatments   ## pooled SD
+data$S_inv1 <- (sqrt ((data$nI1 - 1)*data$sdI1^2 + (data$N_control_sc - 1)*data$sdC^2)/(data$nI1 + data$N_control_sc - 2))
+data$S_inv2 <- (sqrt ((data$nI2 - 1)*data$sdI2^2 + (data$N_control_sc - 1)*data$sdC^2)/(data$nI2 + data$N_control_sc - 2))
+data$S_inv1_inv2 <- (sqrt ((data$nI1_I2 - 1)*data$sdI1_I2^2 + (data$N_control_sc - 1)*data$sdC^2)/(data$nI1_I2 + data$N_control_sc - 2))
+
+# ES's (d's) for treatments
+data$d_inv1 <- (data$mI1 - data$mC) / data$S_inv1 *data$J_inv1
+data$d_inv2 <- (data$mI2 - data$mC) / data$S_inv2 *data$J_inv2
+data$d_inv1_inv2 <- (data$mI1_I2 - data$mC) / data$S_inv1_inv2 *data$J_inv1_inv2
+
+# variance of ES's (sigma^2)
+data$d_var_inv1 <- (1 - (3/(4*(data$nI1 + data$N_control_sc - 2) - 1)))^2 * ((data$nI1 + data$N_control_sc - 2)/((data$nI1*data$N_control_sc/(data$nI1 + data$N_control_sc)) * (data$nI1 + data$N_control_sc - 4)))
+data$d_var_inv2 <- (1 - (3/(4*(data$nI2 + data$N_control_sc - 2) - 1)))^2 * ((data$nI2 + data$N_control_sc - 2)/((data$nI2*data$N_control_sc/(data$nI2 + data$N_control_sc)) * (data$nI2 + data$N_control_sc - 4)))
+data$d_var_inv1_inv2 <- (1 - (3/(4*(data$nI1_I2 + data$N_control_sc - 2) - 1)))^2 * ((data$nI1_I2 + data$N_control_sc - 2)/((data$nI1_I2*data$N_control_sc/(data$nI1_I2 + data$N_control_sc)) * (data$nI1_I2 + data$N_control_sc - 4)))
+
+# Calculating Predicted Additive effect - from Jackson et al., 2016)
+ 
+data$mean_pred_add <- (data$mI1 - data$mC) + (data$mI2 - data$mC) + data$mC
+
+# Replacing impossible values with zero:
+# which effect sizes are predicted to be negative?
+test<-data[data$mean_pred_add<0,c("PR.ID","Impact_type","Level_ecological_organization","mC","mI1","mI2","mean_pred_add")]
+#dim(test) 
+#unique(test$Impact_type) # many of these are variable that can't be negative (e.g. abundance, richness, diversity, production etc)
+ 
+# Replacing impossible negative values with zeros
+## define by those where the "orginal" (without sign change) predicted additive is <0 but none of the treatment means are
+data$mean_pred_add[data$mean_pred_add<0&data$mC>0&data$mI1>0&data$mI2>0&data$mI1_I2>0]<-0
+
+# calculate pooled SD and n
+data$SD_pred_add <- (sqrt ((data$nI1 - 1)*data$sdI1^2 + (data$nI2 - 1)*data$sdI2^2)/(data$nI1 + data$nI2 - 2))
+data$n_pred_add <- data$nI1 + data$nI2
+
+# calculate Hedges' *d* comparing  observed combined effect from co-invasion) to Predicted Additive
+data$J_pred_add <- 1 - (3/(4*(data$nI1_I2 + data$n_pred_add - 2) - 1))
+data$S_pred_add <- (sqrt ((data$nI1_I2 - 1)*data$sdI1_I2^2 + (data$n_pred_add - 1)*data$SD_pred_add^2)/(data$nI1_I2 + data$n_pred_add - 2))
+data$d_pred_add <- (data$mI1_I2 - data$mean_pred_add) / data$S_pred_add *data$J_pred_add
+data$d_var_pred_add <-(1 - (3/(4*(data$nI1_I2 + data$n_pred_add  - 2) - 1)))^2 * ((data$nI1_I2 + data$n_pred_add - 2)/((data$nI1_I2*data$n_pred_add/(data$nI1_I2 + data$n_pred_add)) * (data$nI1_I2 + data$n_pred_add - 4)))
+
+```
+
+## Classifying interactions
+Based on the framework from **[(Piggott et al., 2015)](https://doi.org/10.1002/ece3.1465)**, and **[(Lopez et al., 2022)](https://doi.org/10.1073/pnas.211738911)**, we compared the observed combined effect  to the predicted additive effect. Interactions were considered additive if the observed combined effect was not significantly different from the predicted additive effect (i.e., 95% confidence intervals around Hedges' *d* overlapped zero), otherwise considered non-additive, In case of non-additivity, synergistic interactions occured when the observed combined effect  differed from the predicted additive effect and fell outside the range of values of the individual invader effects and the control, otherwise, they were classified as antagonistic. We further classified antagonistic and synergistic interactions based on whether the observed combined effect was more positive or negative than the predicted additive effec as: antagonistic (-), antagonistic (+), synergistic (-), and synergistic (+), where the + and - denotes the observed combined effect being more positive or negative than expected respectively (Fig. 2; Redrawn from **[(Lopez et al., 2022)](https://doi.org/10.1073/pnas.211738911)**)
+
+## Conceptual model 
+
+```{r fig.height=7, fig.width=15, cache=TRUE}
+demo_data<-data.frame(case = rep(c('--', "-+"), each = 4),
+                       effect = factor(rep(c('INV-1', 'INV-2', 'Additive\nINV-1&INV-2',  'Observed\nINV-1&INV-2'), times = 2), 
+                                       levels = c('INV-1', 'INV-2','Additive\nINV-1&INV-2',  'Observed\nINV-1&INV-2')),
+                       type = factor(rep(c('INV-1', 'INV-2', 'PredAdd', ''), 2),
+                                     levels = c('INV-1', 'INV-2', 'PredAdd',  '')),
+                       val = c(-2, -4, -6, NA,
+                               -1, 4, 3,  NA))
+
+
+conc.a<-
+  ggplot(data = demo_data[demo_data$case=="--",], 
+         aes(x = effect, y = val)) + 
+  ylim(-7.5, 2)+
+  geom_rect(aes(xmin = 'Additive\nINV-1&INV-2', xmax = Inf, ymin = 0, ymax = Inf), # syn+
+            fill = "#016699") +
+  geom_rect(aes(xmin = 'Additive\nINV-1&INV-2', xmax = Inf, ymin = 0, ymax = -5.5), # an+
+            fill = "#67A3C2") +
+  geom_rect(aes(xmin = 'Additive\nINV-1&INV-2', xmax = Inf, ymin = -5.5, ymax = -6.5), # add
+            fill = "#DDDDDD") +
+  geom_rect(aes(xmin = 'Additive\nINV-1&INV-2', xmax = Inf, ymin = -6.5, ymax = -Inf), # syn-
+            fill = "#BE3526") +
+  geom_bar(stat = "identity", position = "stack",
+           aes(fill = type),
+           color = "black") +
+  geom_segment(x = 3, xend = 8.6, y = -5.5, yend = -5.5, linetype = "dashed", size = 1) +
+  geom_segment(x = 3, xend = 8.6, y = -6.5, yend = -6.5, linetype = "dashed", size = 1) +
+  scale_fill_manual(values = c("#CCCCCC", "#999999", "#666666")) +
+  geom_label(label = "Synergistic (-)", x = 4, y = -7, label.size = 0, alpha = 0.001, size = 5,  colour = "white") +
+  geom_label(label = "Additive", x = 4, y = -6, label.size = 0, alpha = 0.001, size = 5) + 
+  geom_label(label = "Antagonistic (+)", x = 4, y = -2.5, label.size = 0, alpha = 0.001, size = 5) +
+  geom_label(label = "Synergistic (+)", x = 4, y = 1, label.size = 0, alpha = 0.001, size = 5, colour = "white")+
+  # add error bars
+  geom_segment(x = 3, xend = 3, y = -6.5, yend = -5.5, size = 1.5) +
+  geom_segment(y = -5.5, yend = -5.5, x = 2.95, xend = 3.05, size = 1.5) +
+  geom_segment(y = -6.5, yend = -6.5, x = 2.95, xend = 3.05, size = 1.5) +
+  geom_segment(x = 1, xend = 1, y = -2.2, yend = -1.8, size = 1.5) +
+  geom_segment(y = -2.2, yend = -2.2, x = 0.95, xend = 1.05, size = 1.5) +
+  geom_segment(y = -1.8, yend = -1.8, x = 0.95, xend = 1.05, size = 1.5) +
+  geom_segment(x = 2, xend = 2, y = -4.2, yend = -3.8, size = 1.5) +
+  geom_segment(y = -4.2, yend = -4.2, x = 1.95, xend = 2.05, size = 1.5) +
+  geom_segment(y = -3.8, yend = -3.8, x = 1.95, xend = 2.05, size = 1.5) +
+  geom_hline(yintercept = 0, size = 1.2)+
+  theme_bw() +
+  ylab("Effect size (treatment - control)") +
+  theme(panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        strip.background = element_blank(),
+        panel.border = element_rect(colour = "black", fill = NA),
+        legend.position = "none", 
+        axis.title.y = element_text(size=15, vjust = 0.7, colour = "black", face = "bold"),
+        axis.text.x = element_text(size=12, colour = "black", face = "bold"),
+        axis.text.y = element_text(size=12, colour = "black", face = "bold")) +
+  xlab("") 
+
+conc.b<-
+  ggplot(data = demo_data[demo_data$case=="-+",], 
+         aes(x = effect, y = val)) + 
+  ylim(-3,6) +
+  geom_rect(aes(xmin = 'Additive\nINV-1&INV-2', xmax = Inf, ymin = 4, ymax = Inf), # syn+
+            fill = "#016699") +
+  geom_rect(aes(xmin = 'Additive\nINV-1&INV-2', xmax = Inf, ymin = 3.5, ymax = 4), # an+
+            fill = "#67A3C2") +
+  geom_rect(aes(xmin = 'Additive\nINV-1&INV-2', xmax = Inf, ymin = 2.5, ymax = 3.5), # add
+            fill = "#DDDDDD") +
+  geom_rect(aes(xmin = 'Additive\nINV-1&INV-2', xmax = Inf, ymin = -1, ymax = 2.5), # an-
+            fill = "#D8867D") +
+  geom_rect(aes(xmin = 'Additive\nINV-1&INV-2', xmax = Inf, ymin = -1, ymax = -Inf), # syn-
+            fill = "#BE3526") +
+  geom_bar(stat = "identity", position = "stack",
+           aes(fill = type),
+           color = "black") +
+  geom_segment(x = 3, xend = 7.6, y = 3.5, yend = 3.5, linetype = "dashed", size = 1) +
+  geom_segment(x = 3, xend = 7.6, y = 2.5, yend = 2.5, linetype = "dashed", size = 1) +
+  geom_segment(x = 2.4, xend = 7.6, y = 4, yend = 4, linetype = "dashed", size = 1) +
+  geom_segment(x = 1.4, xend = 7.6, y = -1, yend = -1, linetype = "dashed", alpha = 1, size = 1) +
+  scale_fill_manual(values = c("#CCCCCC", "#999999", "#666666")) +
+  #geom_vline(xintercept = 2.5) +
+  #geom_vline(xintercept = 3.5)  +
+  geom_label(label = "Synergistic (-)", x = 4, y = -2, label.size = 0, alpha = 0.001, size = 5, colour = "white")+
+  geom_label(label = "Additive", x = 4, y = 3, label.size = 0, alpha = 0.001, size = 5) +  
+  geom_label(label = "Antagonistic (+)", x = 4, y = 3.76, label.size = 0, alpha = 0.001, size = 5) +
+  geom_label(label = "Synergistic (+)", x = 4, y = 5, label.size = 0, alpha = 0.001,size = 5,  colour = "white")+
+  geom_label(label = "Antagonistic (-)", x = 4, y = 1, label.size = 0, alpha = 0.001,size = 5) +
+  geom_label(label = "Antagonistic (-)", x = 4, y = -0.5, label.size = 0, alpha = 0.001,size = 5) +
+  geom_segment(x = 3, xend = 3, y = 2.5, yend = 3.5, size = 1.5) +
+  geom_segment(y = 3.5, yend = 3.5, x = 2.95, xend = 3.05, size = 1.5) +
+  geom_segment(y = 2.5, yend = 2.5, x = 2.95, xend = 3.05, size = 1.5) +
+  geom_segment(x = 1, xend = 1, y = -1.2, yend = -0.8, size = 1.5) +
+  geom_segment(y = -1.2, yend = -1.2, x = 0.95, xend = 1.05, size = 1.5) +
+  geom_segment(y = -0.8, yend = -0.8, x = 0.95, xend = 1.05, size = 1.5) +
+  geom_segment(x = 2, xend = 2, y = 4.2, yend = 3.8, size = 1.5) +
+  geom_segment(y = 4.2, yend = 4.2, x = 1.95, xend = 2.05, size = 1.5) +
+  geom_segment(y = 3.8, yend = 3.8, x = 1.95, xend = 2.05, size = 1.5) +geom_hline(yintercept = 0, size = 1.2)+
+  theme_bw() +
+  ylab("Effect size (treatment - control)") +
+  theme(panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        strip.background = element_blank(),
+        panel.border = element_rect(colour = "black", fill = NA),
+        legend.position = "none", 
+        axis.title.y = element_text(size=15, vjust = 0.7, colour = "black", face = "bold"),
+        axis.text.x = element_text(size=12, colour = "black", face = "bold"),
+        axis.text.y = element_text(size=12, colour = "black", face = "bold")) +
+  xlab("") 
+
+(conc.a| conc.b) +plot_annotation(tag_prefix = "(", tag_levels = "a", tag_suffix = ")")
+```
+**Figure 2 (main manuscript)**. Conceptual framework redrawn from **[Lopez et al. (2022)](https://doi.org/10.1073/pnas.211738911)** for classification of different interaction types based on the relationship between co-occuring invasive species individual effects (i.e., INV-1 and INV-2) and the predicted additive effect (i.e., sum of the individual invader effects), for cases where both co-invaders (i.e., INV-1 and INV-2) individual effects are in the same direction (a) and where the co-invaders (i.e., INV-1 and INV-2) individual effects are in opposite directions (b). Observed combined invader (INV-1 and INV-2) effects falling within the 95% confidence interval around the predicted additive effect are classified as additive. Effects that differ from the predicted additive (INV-1+INV-2) effect but fall within the range of the individual invader effects and the control are classified as antagonistic, while as those falling outside of this range are classified as synergistic. Antagonistic and synergistic effects are further classified as "+"  or "-" depending on whether the observed combined effect is more positive or more negative than the predicted additive effect. 
+```{r}
+
+# define confidence intervals for d_pred_add
+data$d_CI_pred_add <- 1.96 * (sqrt(data$d_var_pred_add) / sqrt(data$n_pred_add))
+data$d_lower_pred_add <- data$d_pred_add - data$d_CI_pred_add
+data$d_higher_pred_add <- data$d_pred_add + data$d_CI_pred_add
+
+# creating two columns here:
+## one called, interaction_type, has Additive, Synergistic, Antagonistic effect
+## second called, interaction_type_direction, has + or - sign for Synergistic and Antagonistic based on whether higher or lower than expected (specifically from Lopez et al., 2022)
+
+# condition 1. is Hedges' *d* different from 0 (based on CI)? if not -> Additive interaction
+data$interaction_type[data$d_lower_pred_add<=0 & data$d_higher_pred_add>=0] <- "Additive"
+data$interaction_type_direction[data$d_lower_pred_add<=0 & data$d_higher_pred_add>=0] <- "Additive"
+
+# condition 2. does Hedges' *d* fall outside bounds of control and treatments? if yes -> Synergistic interaction 
+# for this, first define confidence intervals for d_inv1_inv2 to see whether they overlap the d's of any of the treatments or control (Piggott et al., 2015; Lopez et al., 2022)
+data$d_CI_inv1_inv2 <- 1.96 * (sqrt(data$d_var_inv1_inv2) / sqrt(data$nI1_I2))
+data$d_lower_inv1_inv2 <- data$d_inv1_inv2 - data$d_CI_inv1_inv2
+data$d_higher_inv1_inv2 <- data$d_inv1_inv2 + data$d_CI_inv1_inv2
+
+# next define synergies
+data$interaction_type[data$d_lower_inv1_inv2>0 & data$d_lower_pred_add>0 & data$d_lower_inv1_inv2>data$d_inv1 & data$d_lower_inv1_inv2>data$d_inv2]<- "Synergistic"
+data$interaction_type[data$d_higher_inv1_inv2<0 & data$d_higher_pred_add<0 & data$d_higher_inv1_inv2<data$d_inv1 & data$d_higher_inv1_inv2<data$d_inv2]<- "Synergistic"
+data$interaction_type_direction[data$d_lower_inv1_inv2>0 & data$d_lower_pred_add>0 & data$d_lower_inv1_inv2>data$d_inv1 & data$d_lower_inv1_inv2>data$d_inv2]<- "Synergistic +"
+data$interaction_type_direction[data$d_higher_inv1_inv2<0 & data$d_higher_pred_add<0 & data$d_higher_inv1_inv2<data$d_inv1 & data$d_higher_inv1_inv2<data$d_inv2]<- "Synergistic -"
+
+# otherwise, Antagonistic
+data$interaction_type_direction[data$d_lower_pred_add>0 & is.na(data$interaction_type)] <- "Antagonistic +"
+data$interaction_type_direction[data$d_higher_pred_add<0 & is.na(data$interaction_type)] <- "Antagonistic -"
+data$interaction_type[is.na(data$interaction_type)]<-"Antagonistic"
+
+# tabulating interaction cateogories
+#table(data$interaction_type)
+
+# calculating proportions 
+#table(data$interaction_type)/nrow(data)
+
+# tabulating interaction cateogories by direction
+#table(data$interaction_type_direction)
+
+# calculating proportions 
+#table(data$interaction_type_direction)/nrow(data)
+
+# calculating percentage
+round(table(data$interaction_type_direction)/nrow(data)*100, 2)
+```
+
+
+## Intercept only model
+We conducted the intercept only meta-analytic model (i.e.  models) using the `rma.mv` function from the `metafor` package **[(Viechtbauer, 2010)](https://doi.org/10.18637/jss.v036.i03)**. The `rma.mv`function allows us to incorporate variance-covariance matrices in the `V` term. We fitted two random effects i.e. `effect size ID` (ES.ID)  to measure the residual heterogeneity and `study ID` (PR.ID) to account for non-independence of multiple effect sizes originating within the same study.
+
+```{r fig.height=5, fig.width=15, cache=TRUE}
+# make variance covariance matrix
+data <- data[order(data$CHT.ID), ]
+data$vcv_0.5 <- make_VCV_matrix(data = data, V = "d_var_pred_add",
+                              cluster = "CHT.ID", obs = "ES.ID",
+                              type = "vcv", rho = 0.5)
+
+# # intercept only meta-analytic model
+hedges_d_full <- rma.mv(d_pred_add, vcv_0.5, random = list(~1 | PR.ID, ~1 | ES.ID), method = "REML", data = data)
+full<-mod_results(hedges_d_full, mod = "1", data = data, group = "PR.ID")
+# interaction types
+int_plot<-data.frame(table(data$interaction_type_direction)) %>%
+  mutate(interaction_type_direction=Var1, Prop = Freq/sum(Freq), x = "x")
+int_plot$interaction_type_direction<-factor(int_plot$interaction_type_direction, levels = c("Synergistic +","Antagonistic +", "Additive", "Antagonistic -","Synergistic -"))
+
+# making plots
+
+p1 <- my.orchard(full, mod = "1", xlab = expression(paste("Mean effect size (Hedges' ", italic("d"), ")")), alpha = 0.1, data = data, group = "PR.ID",
+           whisker = 0.02) # Display orchard plot
+
+  
+p2 <-ggplot(data = int_plot, aes(x =Prop, y = x, fill = interaction_type_direction)) +
+  geom_bar(stat = "identity", position = "stack") +
+  scale_fill_manual("Interaction Type", values = c("#BE3526", "#D8867D", "#DDDDDD", "#67A3C2","#016699")[5:1]) + # "breaks" flips order in legend
+  theme_bw() +
+  #geom_text(y=0.9, x=1.5, label = "B", size =10)+
+  labs(x = "Interaction type (Proportion of cases)")+
+  theme(axis.title.x = element_text(size = 14, face = "bold", colour = "black"),  
+        axis.text.x = element_text(size = 14, face = "bold", colour = "black"),
+        axis.text.y = element_blank(),
+        axis.title.y = element_blank(),
+        axis.ticks.y = element_blank(),
+        legend.position = c(.25,-.4), legend.direction = "horizontal",
+        legend.title = element_text(size=15, face = "bold"), #change legend title font size
+        legend.text = element_text(size=13, face = "bold"),
+        plot.margin = margin(0.5, 0.5, 2, 1, "cm")) # top, right, bottom, left
+
+(p1| p2) +plot_annotation(tag_prefix = "(", tag_levels = "a", tag_suffix = ")")
+```
+**Figure 3 (main manuscript).** The orchard plot showing the mean combined effect  (Hedge's *d* - central square) of co-invasion relative to the sum of individual effects, along with 95% confidence interval (thick black line) 95% prediction interval (thin black line), and observed effect sizes (coloured background points) with their size scaled by precision of estimate (1/SE). k denotes number of effect sizes (number of studies) (a) and the proportion of interaction types (b). 
+
+**Table S6:** Overall mean combined effect along with 95% confidence intervals (CIs) and 95% prediction intervals. 
+
+```{r}
+# getting a table of CI and PI
+
+pred <- get_pred1(hedges_d_full, mod = "Int")
+
+
+# Drawing a table for overall effect 
+tibble(`Effect size` = ("Hedges' d"), 
+       `Overall mean` = pred$estimate, 
+       `Lower CI [0.025]` = pred$lowerCL, 
+       `Upper CI [0.975]` = pred$upperCL,
+       `P value`          = pred$pval,
+       `Lower PI [0.025]` = pred$lowerPR, 
+       `Upper PI [0.975]` = pred$upperPR) %>% 
+  kable("html", digits = 2) %>% 
+  kable_styling("striped", position = "left")
+    
+```
+
+
+Heterogeneity among the effect sizes measured using *I*^2^.
+
+```{r}
+# estimating I2 as measure of heterogeneity in percentage
+het<-round(I2(hedges_d_full)* 100, 2)
+```
+
+# Meta-regression models
+In the present study, We conducted a number of univariate meta-regression models for the following recorded moderators to test our key research questions: **(a)**`Response class (i.e., Impact type`) **(b)** `Level_ecological_organization`, **(c)** `Ecosysyem_type`, **(d)** `Continent`, **(e)** `Taxnomic group` and **(f)**`Study_design`. Simply, these moderators help us to investigate whether the co-invasion effects varies with the studied variables.
+
+## Moderator: Impact type 
+```{r, fig.width=12, fig.height=23}
+
+hedges_d_Impact.type <- rma.mv(yi = d_pred_add, vcv_0.5, mods = ~Impact_type -1,
+                                     random = list(~1 | PR.ID, ~1 | ES.ID), method = "REML", data = data)
+
+# interactions
+d_imp_typ<-data[data$Impact_type%in%c('Animal behaviour', 'Animal development', 'Animal growth', 'Plant fitness', 'Plant growth','Animal abundance', 'Animal production', 'Animal richness', 'Microbial diversity', 'Microbial Richness', 'Plant abundance', 'Plant diversity', 'Plant production', 'Plant richness', 'C pools', 'Dissolved oxygen', 'Litter decomposition', 'Microbial activity', 'Macronutrients', 'Micronutrients', 'N pools', 'P pools', 'pH', 'Salinity', 'Soil moisture', 'Soil OM', 'WaterN/P', 'Water temperature'),]
+imp_plot<-data.frame(table(d_imp_typ$interaction_type_direction, d_imp_typ$Impact_type)) %>%
+  group_by(Var2) %>% mutate(sum = sum(Freq), prop = Freq/sum) %>% data.frame() %>% select(interaction_type_direction=Var1, Impact_type=Var2, prop=prop)
+imp_plot$interaction_type_direction<-factor(imp_plot$interaction_type_direction, levels = c("Synergistic +","Antagonistic +", "Additive", "Antagonistic -","Synergistic -"))
+imp_plot$Impact_type<-as.character(imp_plot$Impact_type)
+
+# Fisher's exact test:
+imp_F <- table(data$interaction_type_direction, data$Impact_type)
+set.seed(111)
+FT_imp<-fisher.test(imp_F, simulate.p.value = TRUE, B = 5000) # p-value = 0.0002
+
+imp<-mod_results(hedges_d_Impact.type, mod = "Impact_type", data = data, group = "PR.ID")
+# reordering the variables (impacts) by levels of ecological organization 
+data$Impact_type = as.factor(data$Impact_type)
+data$Impact_type_reordered <- factor(data$Impact_type, c("Water temperature", "Water N/P", "Soil OM", "Soil moisture", "Salinity", "pH", "P pools", "N pools", "Micronutrients", "Macronutrients", "Microbial activity", "Litter decomposition", "Dissolved oxygen",  "C pools", "Plant richness", "Plant production", "Plant diversity", "Plant abundance", "Microbial Richness", "Microbial diversity", "Animal richness", "Animal production","Animal abundance", "Plant growth", "Plant fitness", "Animal growth", "Animal development", "Animal behaviour"))
+
+
+hedges_d_Impact_type_reordered  <- rma.mv(yi = d_pred_add, vcv_0.5, mods = ~Impact_type_reordered -1,
+                              random = list(~1 | PR.ID, ~1 | ES.ID), method = "REML", data = data)
+imp_reordered<-mod_results(hedges_d_Impact_type_reordered, mod = "Impact_type_reordered", data = data, group = "PR.ID")
+p1<-my.orchard1(imp_reordered, mod = "Impact_type_reordered", xlab = expression(paste("Mean effect size (Hedges' ", italic("d"), ")")), cb = TRUE, alpha = 0.1, data = data, group = "PR.ID",
+           whisker = 0.4) + theme(legend.position = c(0,
+                                                       0.4), legend.justification = c(0, 1), legend.key.size = unit(1, "mm")) + theme(legend.direction = "vertical",
+                                                                                                                                       legend.title = element_text(size = 12), legend.text = element_text(size = 10)) + theme(element_blank())
+
+p2<-
+  ggplot(data = imp_plot, aes(x = prop, y = Impact_type, fill = interaction_type_direction)) +
+  geom_bar(stat = "identity", position = "stack") +
+  scale_fill_manual("Interaction Type", values = c("#BE3526", "#D8867D", "#DDDDDD", "#67A3C2","#016699"),
+                    breaks=c("Synergistic +","Antagonistic +", "Additive", "Antagonistic -","Synergistic -")[5:1]) +
+  theme_bw() +
+  xlab("Interaction type (Proportion of cases)")+
+  ylab("")+
+  theme(axis.title.x = element_text(size = 14, colour = "black", face = "bold"),  
+        axis.text.x = element_text(size = 14, colour = "black", face = "bold"),
+        axis.text.y = element_text(size = 12, colour = "black", face = "bold"),
+        axis.title.y = element_blank(),
+        axis.ticks.y = element_blank(),
+        legend.position = "bottom",
+        legend.title = element_text(size=14, face = "bold"), #change legend title font size
+        legend.text = element_text(size=13, face = "bold"),
+        plot.margin = margin(0.5, 0.5, 2, 1, "cm")) + theme(element_blank()) # top, right, bottom, left  # top, right, bottom, left
+
+fig<-p1/p2 + plot_annotation(tag_prefix = "(", tag_levels = "a", tag_suffix = ")")
+fig
+```
+**Figure 4 (main manuscript).** Orchard plot showing the mean combined effects (Hedge' s *d* - central squares) of co-invasion relative to the sum of individual effects, along with 95% confidence intervals (thick black lines with whiskers), 95% prediction intervals (thin black lines), and observed effect sizes (coloured background points). k denotes number of effect sizes (number of studies) (a) and the proportion of interaction types (b) across `response classes`.
+
+
+**Table S7.** Regression coefficients (Estimate) with 95% confidence intervals (CIs), and significance levels from the meta-regression model with `response class` as moderator. *R^2^~marginal~* = 8.52%.
+
+```{r}
+# getting marginal R2
+r2_hedges_d_Impact.type <- r2_ml(hedges_d_Impact.type)
+
+# getting prediction interval
+res_hedges_d_Impact.type <- get_pred1(hedges_d_Impact.type, mod = "Impact_type")
+
+# creating table
+imp<-tibble(`Response class` = as.character(res_hedges_d_Impact.type$name),  
+       `Estimate` = res_hedges_d_Impact.type$estimate, 
+       `Lower CI [0.025]` = res_hedges_d_Impact.type$lowerCL, 
+       `Upper CI [0.975]` = res_hedges_d_Impact.type$upperCL, 
+       `P value`          = res_hedges_d_Impact.type$pval) 
+kable(imp, digits = 3) %>% kable_styling("striped", position = "left")%>%
+  scroll_box(width = "820px", height = "300px")
+
+```
+## Moderator: Level of ecological organization
+```{r, fig.width=15, fig.height=10, cache=TRUE}
+
+hedges_d_Level.ecological.organization <- rma.mv(yi = d_pred_add, vcv_0.5, mods = ~Level_ecological_organization -1,
+                                                    random = list(~1 | PR.ID, ~1 | ES.ID), method = "REML", data = data)
+
+# interactions
+d_ecol_org<-data[data$Level_ecological_organization%in%c('Community','Ecosystem', 'Species'),]
+ecol_org_plot<-data.frame(table(d_ecol_org$interaction_type_direction, d_ecol_org$Level_ecological_organization)) %>%
+  group_by(Var2) %>% mutate(sum = sum(Freq), prop = Freq/sum) %>% data.frame() %>% select(interaction_type_direction=Var1, Level_ecological_organization=Var2, prop=prop)
+ecol_org_plot$interaction_type_direction<-factor(ecol_org_plot$interaction_type_direction, levels = c("Synergistic +","Antagonistic +", "Additive", "Antagonistic -","Synergistic -"))
+ecol_org_plot$Level_ecological_organization<-as.character(ecol_org_plot$Level_ecological_organization)
+
+# Fisher's exact test:
+ecol_org_F <- table(data$interaction_type_direction, data$Level_ecological_organization)
+set.seed(121)
+FT_ecol_org<-fisher.test(ecol_org_F, simulate.p.value = TRUE, B = 5000) # p-value = 0.3445
+# making Orchard plot
+org<-mod_results(hedges_d_Level.ecological.organization, mod = "Level_ecological_organization", data = data, group = "PR.ID")
+p1<-my.orchard(org, mod = "Level_ecological_organization", xlab = expression(paste("Mean effect size (Hedges' ", italic("d"), ")")), angle = 45, cb = TRUE, alpha = 0.1, data = data, group = "PR.ID",
+           whisker = 0.07) + theme(element_blank())
+
+
+# stacked plot
+p2<-
+  ggplot(data = ecol_org_plot, aes(x = prop, y = Level_ecological_organization, fill = interaction_type_direction)) +
+  geom_bar(stat = "identity", position = "stack") +
+  scale_fill_manual("Interaction Type", values = c("#BE3526", "#D8867D", "#DDDDDD", "#67A3C2","#016699"),
+                    breaks=c("Synergistic +","Antagonistic +", "Additive", "Antagonistic -","Synergistic -")[5:1]) +
+  theme_bw() +
+  xlab("Interaction type (Proportion of cases)")+
+  ylab("")+
+  theme(axis.title.x = element_text(size = 16, face = "bold", colour = "black"),  
+        axis.text.x = element_text(size = 15, face = "bold", colour = "black"),
+        axis.text.y = element_blank(),
+        axis.title.y = element_blank(),
+        axis.ticks.y = element_blank(),
+        legend.position = c(.2,-0.2), legend.direction = "horizontal",
+        legend.title = element_text(size=16, face = "bold"), #change legend title font size
+        legend.text = element_text(size=14, face = "bold"),
+        plot.margin = margin(1, 1, 2, 1, "cm")) + theme(element_blank())# top, right, bottom, left
+(p1| p2) +plot_annotation(tag_prefix = "(", tag_levels = "a", tag_suffix = ")")
+```
+**Figure S1.** Orchard plot showing the mean combined effects (Hedge' s *d* - central square) of co-invasion along with 95% confidence intervals (thick black lines with whiskers), 95% prediction interval (thin black line), and observed effect sizes (coloured background points). k denotes number of effect sizes (number of studies)(a) and the proportion of interaction types (b) across `levels of ecological organization`.
+
+**Table S8.** Regression coefficients (Estimate) with 95% confidence intervals (CIs), and significance levels from the meta-regression model with `Level of ecological organization` as moderator. *R^2^~marginal~* = 0.59%.
+
+```{r}
+# getting marginal R2
+r2_hedges_d_Level.ecological.organization <- r2_ml(hedges_d_Level.ecological.organization)
+
+# getting prediction interval
+res_hedges_d_Level.ecological.organization <- get_pred1(hedges_d_Level.ecological.organization, mod = "Level_ecological_organization")
+
+# creating table
+imp<-tibble(`Level` = as.character(res_hedges_d_Level.ecological.organization$name),  
+       `Estimate` = res_hedges_d_Level.ecological.organization$estimate, 
+       `Lower CI [0.025]` = res_hedges_d_Level.ecological.organization$lowerCL, 
+       `Upper CI [0.975]` = res_hedges_d_Level.ecological.organization$upperCL, 
+       `P value`          = res_hedges_d_Level.ecological.organization$pval) 
+kable(imp, digits = 3) %>% kable_styling("striped", position = "left")%>%
+  scroll_box(width = "820px", height = "180px")
+
+```
+## Moderator: Ecosystem type
+```{r, fig.width=16, fig.height=15, cache=TRUE}
+
+hedges_d_Ecosystem_type <- rma.mv(yi = d_pred_add, vcv_0.5, mods = ~Ecosystem_type -1,
+                                                    random = list(~1 | PR.ID, ~1 | ES.ID), method = "REML", data = data)
+
+# interactions
+d_ecosys<-data[data$Ecosystem_type%in%c('Agricultural field','Coastal', 'Forest', 'Grassland', 'Lake', 'Pond', 'Riparian', "Unknown", "Wetland"),]
+ecosys_plot<-data.frame(table(d_ecosys$interaction_type_direction, d_ecosys$Ecosystem_type)) %>%
+  group_by(Var2) %>% mutate(sum = sum(Freq), prop = Freq/sum) %>% data.frame() %>% select(interaction_type_direction=Var1, Ecosystem_type=Var2, prop=prop)
+ecosys_plot$interaction_type_direction<-factor(ecosys_plot$interaction_type_direction, levels = c("Synergistic +","Antagonistic +", "Additive", "Antagonistic -","Synergistic -"))
+ecosys_plot$Ecosystem_type<-as.character(ecosys_plot$Ecosystem_type)
+
+# Fisher's exact test:
+ecosys_F <- table(data$interaction_type_direction, data$Ecosystem_type)
+set.seed(123)
+FT_ecosys<-fisher.test(ecosys_F, simulate.p.value = TRUE, B = 5000) # p-value = 0.03339
+# making Orchard plot
+Ecosys<-mod_results(hedges_d_Ecosystem_type, mod = "Ecosystem_type", data = data, group = "PR.ID")
+p1<-my.orchard(Ecosys, mod = "Ecosystem_type", xlab = expression(paste("Mean effect size (Hedges' ", italic("d"), ")")), angle = 45, cb = TRUE, alpha = 0.1, data = data, group = "PR.ID",
+           whisker = 0.07) + theme(element_blank())
+# stacked plot
+p2<-
+  ggplot(data = ecosys_plot, aes(x = prop, y = Ecosystem_type, fill = interaction_type_direction)) +
+  geom_bar(stat = "identity", position = "stack") +
+  scale_fill_manual("Interaction Type", values = c("#BE3526", "#D8867D", "#DDDDDD", "#67A3C2","#016699"),
+                    breaks=c("Synergistic +","Antagonistic +", "Additive", "Antagonistic -","Synergistic -")[5:1]) +
+  theme_bw() +
+  xlab("Interaction type (Proportion of cases)")+
+  ylab("")+
+  theme(axis.title.x = element_text(size = 16, face = "bold", colour = "black"),  
+        axis.text.x = element_text(size = 15, face = "bold", colour = "black"),
+        axis.text.y = element_blank(),
+        axis.title.y = element_blank(),
+        axis.ticks.y = element_blank(),
+        legend.position = c(.2,-0.1), legend.direction = "horizontal",
+        legend.title = element_text(size=16, face = "bold"), #change legend title font size
+        legend.text = element_text(size=14, face = "bold"),
+        plot.margin = margin(1, 1, 2, 1, "cm")) + theme(element_blank()) # top, right, bottom, left
+
+(p1| p2) +plot_annotation(tag_prefix = "(", tag_levels = "a", tag_suffix = ")")
+```
+
+**Figure 5 (main manuscript).** Orchard plot showing the mean combined effects (Hedge' s *d* - central square) of co-invasion relative to the sum of individual effects, along with 95% confidence intervals (thick black lines with whiskers), 95% prediction intervals (thin black lines), and observed effect sizes (coloured background points). k denotes number of effect sizes (number of studies) (a) and the proportion of interaction types (b) across studied `ecosystem types`.
+
+**Table S9.** Regression coefficients (Estimate) with 95% confidence intervals (CIs), and significance levels from the meta-regression model with `ecosystem type` as moderator. *R^2^~marginal~* = 2.87%.
+
+```{r}
+# getting marginal R2
+r2_hedges_d_Ecosystem_type <- r2_ml(hedges_d_Ecosystem_type)
+
+# getting prediction interval
+res_hedges_d_Ecosystem_type <- get_pred1(hedges_d_Ecosystem_type, mod = "Ecosystem_type")
+
+# creating table
+imp<-tibble(`Ecosystem` = as.character(res_hedges_d_Ecosystem_type$name),  
+       `Estimate` = res_hedges_d_Ecosystem_type$estimate, 
+       `Lower CI [0.025]` = res_hedges_d_Ecosystem_type$lowerCL, 
+       `Upper CI [0.975]` = res_hedges_d_Ecosystem_type$upperCL, 
+       `P value`          = res_hedges_d_Ecosystem_type$pval) 
+kable(imp, digits = 3) %>% kable_styling("striped", position = "left")%>%
+  scroll_box(width = "820px", height = "300px")
+
+```
+## Moderator: Continent
+```{r, fig.width=16, fig.height=15, cache=TRUE}
+
+hedges_d_Continent <- rma.mv(yi = d_pred_add, vcv_0.5, mods = ~Continent -1,
+                                                    random = list(~1 | PR.ID, ~1 | ES.ID), method = "REML", data = data)
+
+# interactions
+d_cont<-data[data$Continent%in%c('Africa','Asia-Temperate', 'Asia-Tropical', 'Australia', 'Europe', 'Northern America', 'Southern America'),]
+cont_plot<-data.frame(table(d_cont$interaction_type_direction, d_cont$Continent)) %>%
+  group_by(Var2) %>% mutate(sum = sum(Freq), prop = Freq/sum) %>% data.frame() %>% select(interaction_type_direction=Var1, Continent=Var2, prop=prop)
+cont_plot$interaction_type_direction<-factor(cont_plot$interaction_type_direction, levels = c("Synergistic +","Antagonistic +", "Additive", "Antagonistic -","Synergistic -"))
+cont_plot$Continent<-as.character(cont_plot$Continent)
+
+# Fisher's exact test:
+cont_F <- table(data$interaction_type_direction, data$Continent)
+set.seed(131)
+FT_cont<-fisher.test(cont_F, simulate.p.value = TRUE, B = 5000) # p-value =0.002799
+# making Orchard plot
+Cont<-mod_results(hedges_d_Continent, mod = "Continent", data = data, group = "PR.ID")
+p1<-my.orchard(Cont, mod = "Continent", xlab = expression(paste("Mean effect size (Hedges' ", italic("d"), ")")), angle = 45, cb = TRUE, alpha = 0.1, data = data, group = "PR.ID",
+           whisker = 0.07) + theme(element_blank())
+
+# stacked plot
+p2<-
+  ggplot(data = cont_plot, aes(x = prop, y = Continent, fill = interaction_type_direction)) +
+  geom_bar(stat = "identity", position = "stack") +
+  scale_fill_manual("Interaction Type", values = c("#BE3526", "#D8867D", "#DDDDDD", "#67A3C2","#016699"),
+                    breaks=c("Synergistic +","Antagonistic +", "Additive", "Antagonistic -","Synergistic -")[5:1]) +
+  theme_bw() +
+  xlab("Interaction type (Proportion of cases)")+
+  ylab("")+
+  theme(axis.title.x = element_text(size = 16, face = "bold", colour = "black"),  
+        axis.text.x = element_text(size = 15, face = "bold", colour = "black"),
+        axis.text.y = element_blank(),
+        axis.title.y = element_blank(),
+        axis.ticks.y = element_blank(),
+        legend.position = c(.2,-0.1), legend.direction = "horizontal",
+        legend.title = element_text(size=16, face = "bold"), #change legend title font size
+        legend.text = element_text(size=14, face = "bold"),
+        plot.margin = margin(1, 1, 2, 1, "cm")) + theme(element_blank()) # top, right, bottom, left
+(p1| p2) +plot_annotation(tag_prefix = "(", tag_levels = "a", tag_suffix = ")")
+```
+**Figure 6 (main manuscript).** Orchard plot showing the mean combined effects (Hedge' s *d* - central point) of co-invasion relative to the sum of individual effects, along with 95% confidence intervals (thick black lines with whiskers), 95% prediction intervals (thin black lines), and observed effect sizes (coloured background points). k denotes number of effect sizes (number of studies) (a) and the proportion of interaction types (b) across studied `continents`.
+
+**Table S10.** Regression coefficients (Estimate) with 95% confidence intervals (CIs), and significance levels from the meta-regression model with `continent` as moderator. *R^2^~marginal~* = 1.46%.
+
+```{r}
+# getting marginal R2
+r2_hedges_d_Continent <- r2_ml(hedges_d_Continent)
+
+# getting prediction interval
+res_hedges_d_Continent <- get_pred1(hedges_d_Continent, mod = "Continent")
+
+# creating table
+imp<-tibble(`Continent` = as.character(res_hedges_d_Continent$name),  
+       `Estimate` = res_hedges_d_Continent$estimate, 
+       `Lower CI [0.025]` = res_hedges_d_Continent$lowerCL, 
+       `Upper CI [0.975]` = res_hedges_d_Continent$upperCL, 
+       `P value`          = res_hedges_d_Continent$pval) 
+kable(imp, digits = 3) %>% kable_styling("striped", position = "left")%>%
+  scroll_box(width = "820px", height = "300px")
+```
+## Moderator: Study design
+```{r, fig.width=16, fig.height=7, cache=TRUE}
+
+hedges_d_Study_design <- rma.mv(yi = d_pred_add, vcv_0.5, mods = ~Study_design -1,
+                                                    random = list(~1 | PR.ID, ~1 | ES.ID), method = "REML", data = data)
+
+# interactions
+d_stud<-data[data$Study_design%in%c('Experimental','Observational'),]
+stud_plot<-data.frame(table(d_stud$interaction_type_direction, d_stud$Study_design)) %>%
+  group_by(Var2) %>% mutate(sum = sum(Freq), prop = Freq/sum) %>% data.frame() %>% select(interaction_type_direction=Var1, Study_design=Var2, prop=prop)
+stud_plot$interaction_type_direction<-factor(stud_plot$interaction_type_direction, levels = c("Synergistic +","Antagonistic +", "Additive", "Antagonistic -","Synergistic -"))
+stud_plot$Study_design<-as.character(stud_plot$Study_design)
+
+# Fisher's exact test:
+stud_F <- table(data$interaction_type_direction, data$Study_design)
+set.seed(141)
+FT_stud<-fisher.test(stud_F, simulate.p.value = TRUE, B = 5000) # p-value = 0.002999
+# making Orchard plot
+design<-mod_results(hedges_d_Study_design, mod = "Study_design", data = data, group = "PR.ID")
+p1<-my.orchard(design, mod = "Study_design", xlab = expression(paste("Mean effect size (Hedges' ", italic("d"), ")")), angle = 90, cb = TRUE, alpha = 0.1, data = data, group = "PR.ID",
+           whisker = 0.07) + theme(element_blank())
+
+# stacked plot
+p2<-
+  ggplot(data = stud_plot, aes(x = prop, y = Study_design, fill = interaction_type_direction)) +
+  geom_bar(stat = "identity", position = "stack") +
+  scale_fill_manual("Interaction Type", values = c("#BE3526", "#D8867D", "#DDDDDD", "#67A3C2","#016699"),
+                    breaks=c("Synergistic +","Antagonistic +", "Additive", "Antagonistic -","Synergistic -")[5:1]) +
+  theme_bw() +
+  xlab("Interaction type (Proportion of cases)")+
+  ylab("")+
+  theme(axis.title.x = element_text(size = 16, face = "bold", colour = "black"),  
+        axis.text.x = element_text(size = 15, face = "bold", colour = "black"),
+        axis.text.y = element_blank(),
+        axis.title.y = element_blank(),
+        axis.ticks.y = element_blank(),
+        legend.position = c(.2,-0.24), legend.direction = "horizontal",
+        legend.title = element_text(size=16, face = "bold"), #change legend title font size
+        legend.text = element_text(size=14, face = "bold"),
+        plot.margin = margin(1, 1, 2, 1, "cm")) + theme(element_blank())
+
+(p1| p2) +plot_annotation(tag_prefix = "(", tag_levels = "a", tag_suffix = ")")
+```
+**Figure 7 (main manuscript).** Orchard plot showing the mean combined effects (Hedge' s *d* - central square) of co-invasion relative to the sum of individual effects, along with 95% confidence intervals (thick black lines with whiskers), 95% prediction intervals (thin black lines), and observed effect sizes (coloured background points). k denotes number of effect sizes (number of studies) (a) and the proportion of interaction types (b) with  `study design`.
+
+**Table S11.** Regression coefficients (Estimate) with 95% confidence intervals (CIs), and significance levels from the meta-regression model with `study design` as moderator. *R^2^~marginal~* = 0.0003%.
+
+```{r}
+# getting marginal R2
+r2_hedges_d_Study_design <- r2_ml(hedges_d_Study_design)
+
+# getting prediction interval
+res_hedges_d_Study_design <- get_pred1(hedges_d_Study_design, mod = "Study_design")
+
+# creating table
+imp<-tibble(`Study design` = as.character(res_hedges_d_Study_design$name),  
+       `Estimate` = res_hedges_d_Study_design$estimate, 
+       `Lower CI [0.025]` = res_hedges_d_Study_design$lowerCL, 
+       `Upper CI [0.975]` = res_hedges_d_Study_design$upperCL, 
+       `P value`          = res_hedges_d_Study_design$pval) 
+kable(imp, digits = 3) %>% kable_styling("striped", position = "left")%>%
+  scroll_box(width = "820px", height = "140px")
+```
+## Moderator: Taxonomic group 
+```{r, fig.width=16, fig.height=9, cache=TRUE}
+
+hedges_d_Inter_taxon <- rma.mv(yi = d_pred_add, vcv_0.5, mods = ~Interacting_taxon -1,
+                               random = list(~1 | PR.ID, ~1 | ES.ID), method = "REML", data = data)
+
+# interactions
+d_Inter_taxon<-data[data$Interacting_taxon%in%c('Animal-Animal','Plant-Animal', 'Plant-Plant'),]
+Inter_taxon_plot<-data.frame(table(d_Inter_taxon$interaction_type_direction, d_Inter_taxon$Interacting_taxon)) %>%
+  group_by(Var2) %>% mutate(sum = sum(Freq), prop = Freq/sum) %>% data.frame() %>% select(interaction_type_direction=Var1, Interacting_taxon=Var2, prop=prop)
+Inter_taxon_plot$interaction_type_direction<-factor(Inter_taxon_plot$interaction_type_direction, levels = c("Synergistic +","Antagonistic +", "Additive", "Antagonistic -","Synergistic -"))
+Inter_taxon_plot$Interacting_taxon<-as.character(Inter_taxon_plot$Interacting_taxon)
+
+# Fisher's exact test:
+Inter_taxon_F <- table(data$interaction_type_direction, data$Interacting_taxon)
+set.seed(151)
+FT_Inter_taxon<-fisher.test(Inter_taxon_F, simulate.p.value = TRUE, B = 5000) # 2e-04
+# making Orchard plot
+taxon<-mod_results(hedges_d_Inter_taxon, mod = "Interacting_taxon", data = data, group = "PR.ID")
+p1<-my.orchard(taxon, mod = "Interacting_taxon", xlab = expression(paste("Mean effect size (Hedges' ", italic("d"), ")")), angle = 90, cb = TRUE, alpha = 0.1, data = data, group = "PR.ID",
+           whisker = 0.07) + theme(element_blank())
+# stacked plot
+p2<-
+  ggplot(data = Inter_taxon_plot, aes(x = prop, y = Interacting_taxon, fill = interaction_type_direction)) +
+  geom_bar(stat = "identity", position = "stack") +
+  scale_fill_manual("Interaction Type", values = c("#BE3526", "#D8867D", "#DDDDDD", "#67A3C2","#016699"),
+                    breaks=c("Synergistic +","Antagonistic +", "Additive", "Antagonistic -","Synergistic -")[5:1]) +
+  theme_bw() +
+  xlab("Interaction type (Proportion of cases)")+
+  ylab("")+
+  theme(axis.title.x = element_text(size = 16, face = "bold", colour = "black"),  
+        axis.text.x = element_text(size = 15, face = "bold", colour = "black"),
+        axis.text.y = element_blank(),
+        axis.title.y = element_blank(),
+        axis.ticks.y = element_blank(),
+        legend.position = c(.2,-0.2), legend.direction = "horizontal",
+        legend.title = element_text(size=16, face = "bold"), #change legend title font size
+        legend.text = element_text(size=14, face = "bold"),
+        plot.margin = margin(1, 1, 2, 1, "cm")) + theme(element_blank())
+
+(p1| p2) +plot_annotation(tag_prefix = "(", tag_levels = "a", tag_suffix = ")")
+```
+**Figure 8 (main manuscript).** Orchard plot showing the mean combined effects (Hedge' s *d* - central squares) of co-invasion relative to the sum of individual effects, along with 95% confidence intervals (thick black lines with whiskers), 95% prediction intervals (thin black lines), and observed effect sizes (coloured background points). k denotes number of effect sizes (number of studies) (a) and the proportion of interaction types (b) with  `taxonomic group`.
+
+**Table S12.** Regression coefficients (Estimate) with 95% confidence intervals (CIs), and significance levels from the meta-regression model with `taxonomic group` as moderator. *R^2^~marginal~* = 0.56%.
+
+```{r}
+# getting marginal R2
+r2_hedges_d_Inter_taxon <- r2_ml(hedges_d_Inter_taxon)
+
+# getting prediction interval
+res_hedges_d_Inter_taxon <- get_pred1(hedges_d_Inter_taxon, mod = "Interacting_taxon")
+
+# creating table
+imp<-tibble(`Taxonomic group` = as.character(res_hedges_d_Inter_taxon$name),  
+       `Estimate` = res_hedges_d_Inter_taxon$estimate, 
+       `Lower CI [0.025]` = res_hedges_d_Inter_taxon$lowerCL, 
+       `Upper CI [0.975]` = res_hedges_d_Inter_taxon$upperCL, 
+       `P value`          = res_hedges_d_Inter_taxon$pval) 
+kable(imp, digits = 3) %>% kable_styling("striped", position = "left")%>%
+  scroll_box(width = "820px", height = "150px")
+```
+
+
+# Publication bias
+
+We used several proceedures as recommended **[Nakagawa et al., (2021)](https://doi.org/10.1111/2041-210X.13724)** to check for the evidence of publication bias in our data. First, we used a univariate meta regression model with the `sampling standard error` (i.e., square-root of the sampling variances) as a moderator to assess whether there exists any evidence of small-study effects in our dataset (modified `Egger's regression`). In univariate Egger's regression, a significant slope for SE (sqrt(vi)) indicates evidence for small-study effects **[(Bishop and Nakagawa, 2020)](https://doi.org/10.1111/1365-2664.13830)**.Second, we assessed a `time-lag bias` (i.e., decline in the effect sizes with time) by running a univariate meta-regression model with `publication year` as a moderator.
+
+
+```{r, fig.width=11}
+
+# univariate egger regressoin
+data<- data %>% drop_na(d_pred_add)
+egger_hedges_d <- rma.mv(yi = d_pred_add, d_var_pred_add, mods = ~sqrt(d_var_pred_add), test = "t", random = list(~1 | PR.ID, ~1 | ES.ID), method = "REML", data = data)
+
+# plotting funnel plot
+#funnel(egger_hedges_d, yaxis = "seinv", xlim = c(-200, 200), ylim = c(0.03, 0.047), level = c(90, 95, 99), shade = c("white", "gray55", "gray75"), refline = 0, legend = TRUE)
+
+
+pred_pub_hedges_d <- predict.rma(egger_hedges_d)
+pub_all_hedges_d <- data %>% drop_na(d_var_pred_add) %>% mutate(ymin = pred_pub_hedges_d$ci.lb, ymax = pred_pub_hedges_d$ci.ub,
+                                    ymin2 = pred_pub_hedges_d$cr.lb, ymax2 = pred_pub_hedges_d$cr.ub, pred = pred_pub_hedges_d$pred) %>%
+  ggplot(aes(x = sqrt(d_var_pred_add), y = d_pred_add, size = sqrt(1/d_var_pred_add))) + geom_point(shape = 21,
+                                                                                                    fill = "grey90") + geom_smooth(aes(y = ymin2), method = "loess",
+                                                                                                                                   se = FALSE, lty = "dotted", lwd = 0.75, colour = "#0072B2") +
+  geom_smooth(aes(y = ymax2), method = "loess", se = FALSE,
+              lty = "dotted", lwd = 0.75, colour = "#0072B2") + geom_smooth(aes(y = ymin),
+                                                                            method = "loess", se = FALSE, lty = "dotted", lwd = 0.75,
+                                                                            colour = "#D55E00") + geom_smooth(aes(y = ymax), method = "loess",
+                                                                                                              se = FALSE, lty = "dotted", lwd = 0.75, colour = "#D55E00") +
+  geom_smooth(aes(y = pred), method = "loess", se = FALSE,
+              lty = "dashed", lwd = 1, colour = "black") + ylim(-100,
+                                                                100) + xlim(0, 0.8) + labs(x = "sqrt(sampling variance)",
+                                                                                           y = expression(paste("Mean effect size (Hedges' ", italic("d"), ")")), size = "Precision (1/SE)") + guides(fill = "none",
+                                                                                                                                                                                                      colour = "none") + # themes
+  theme_bw() + theme(legend.position = c(0, 1), legend.justification = c(0,
+                                                                         1)) + theme(legend.direction = "horizontal") + theme(legend.background = element_blank()) +
+  theme(axis.text.y = element_text(size = 10, colour = "black",
+                                   hjust = 0.5, angle = 90))
+# time lag bias
+time_lag_effect_hedges_d <- rma.mv(yi = d_pred_add, d_var_pred_add, mods = ~Year, test = "t", 
+                                   random = list(~1 | PR.ID, ~1 | ES.ID), method = "REML", data = data)
+
+
+
+ 
+pred_time <- predict.rma(time_lag_effect_hedges_d)
+time_lag_hedges_d <- data %>% drop_na(d_var_pred_add) %>% mutate(ymin = pred_time$ci.lb, ymax = pred_time$ci.ub,
+                                     ymin2 = pred_time$cr.lb, ymax2 = pred_time$cr.ub, pred = pred_time$pred) %>%
+  ggplot(aes(x = Year, y = d_pred_add, size = sqrt(1/d_var_pred_add))) + geom_point(shape = 21,
+                                                                                    fill = "grey90") + 
+  geom_smooth(aes(y = ymin2), method = "loess", se = FALSE, lty = "dotted",
+              lwd = 0.75, colour = "#0072B2") + geom_smooth(aes(y = ymax2),
+                                                            method = "loess", se = FALSE, lty = "dotted", lwd = 0.75,
+                                                            colour = "#0072B2") + geom_smooth(aes(y = ymin), method = "loess",
+                                                                                              se = FALSE, lty = "dotted", lwd = 0.75, colour = "#D55E00") +
+  geom_smooth(aes(y = ymax), method = "loess", se = FALSE,
+              lty = "dotted", lwd = 0.75, colour = "#D55E00") + geom_smooth(aes(y = pred),
+                                                                            method = "loess", se = FALSE, lty = "dashed", lwd = 1, colour = "black") +
+  ylim(-100, 100) + xlim(1998, 2021) + labs(x = "Year", y = "", size = "Precision (1/SE)")+ guides(fill = "none", colour = "none") +
+  # themes
+  theme_bw() + theme(legend.position = c(0, 1), legend.justification = c(0,
+                                                                         1)) + theme(legend.direction = "horizontal") + theme(legend.background = element_blank()) +
+  theme(axis.text.y = element_text(size = 10, colour = "black",
+                                   hjust = 0.5, angle = 90))
+
+(pub_all_hedges_d + time_lag_hedges_d)  + plot_annotation(tag_prefix = "(", tag_levels = "a", tag_suffix = ")")
+```
+**Figure 9 (main manuscript).** Meta-regression model results showing the moderating effects of (a) square-root of the sampling variances and (b) year of publication on mean combined effect size (Hedge's *d*). Orange dashed line represents 95% confidence intervals, blue dashed line 95% prediction intervals and each background point an effect size, with its size scaled by the precision of estimate (1/SE).
+
+# R session information
+
+The `R session` information provides the necessary information about `packages` including `versions` used in this script for `reproducibility` purposes.
+
+```{r}
+library(pander)
+sessionInfo() %>% pander()
+```
+
+# References
+
+Atkinson, J., Brudvig, L.A., Mallen-Cooper, M., Nakagawa, S., Moles, A.T. & Bonser, S.P. (2022) Terrestrial ecosystem restoration increases biodiversity and reduces its variability, but not to reference levels: A global meta-analysis. *Ecology Letters*, 25, 1725-1737. https://doi.org/10.1111/ele.14025
+
+Ballari, S.A., Kuebbing, S.E. & Nunez, M.A. (2016) Potential problems of removing one invasive species at a time: a meta-analysis of the interactions between invasive vertebrates and unexpected effects of removal programs. *PeerJ*, 4, e2029. https://peerj.com/articles/2029
+
+Bishop, J. & Nakagawa, S. (2021) Quantifying crop pollinator dependence and its heterogeneity using multi-level meta-analysis. *Journal of Applied Ecology*, 58, 1030-1042. https://doi.org/10.1111/1365-2664.13830
+
+Cameron, E.K., Vila, M. & Cabeza, M. (2016) Global meta-analysis of the impacts of terrestrial invertebrate invaders on species, communities and ecosystems. *Global Ecology and Biogeography*, 25, 596-606. https://doi.org/10.1111/geb.12436
+
+Haddaway, N.R., Grainger, M.J. & Gray, C.T. (2022) Citationchaser: A tool for transparent and efficient forward and backward citation chasing in systematic searching. *Research Synthesis Methods*. 13, 533-545. https://doi.org/10.1002/jrsm.1563
+
+Higgins, J.P.T., Thomas, J., Chandler, J., Cumpston, M., Li, T., Page, M. & Welch, V. (Eds.). (2019). *Cochrane handbook for systematic reviews of interventions (2nd ed.)*. John Wiley & Sons. https://training.cochrane.org/handbook/archive/v6
+
+Jackson, M.C. (2015) Interactions among multiple invasive animals. *Ecology*, 96, 2035-2041.  https://doi.org/10.1890/15-0171.1
+
+Jackson, M.C., Loewen, C.J., Vinebrooke, R.D. & Chimimba, C.T. (2016) Net effects of multiple stressors in freshwater ecosystems: a meta-analysis. *Global change biology*, 22, 180-189. https://doi.org/10.1111/gcb.13028
+
+Kuebbing, S.E. & Nunez, M.A. (2015) Negative, neutral, and positive interactions among nonnative plants: patterns, processes, and management implications. *Global Change Biology*, 21, 926-934. https://doi.org/10.1111/gcb.12711
+
+Kuebbing, S.E. & Nunez, M.A. (2016) Invasive non-native plants have a greater effect on neighbouring natives than other non-natives. *Nature plants*, 2, 1-7. https://www.nature.com/articles/nplants2016134
+
+Kuebbing, S.E., Nunez, M.A. & Simberloff, D. (2013) Current mismatch between research and conservation efforts: the need to study co-occurring invasive plant species. *Biological Conservation*, 160, 121-129. https://doi.org/10.1016/j.biocon.2013.01.009 
+
+Nakagawa, S., Lagisz, M., Jennions, M.D., Koricheva, J., Noble, D.W.A., Parker, T.H. *et al*. (2021) Methods for testing publication bias in ecological and evolutionary meta-analyses. *Methods in Ecology and Evolution*, 13, 4-21. https://doi.org/10.1111/2041-210X.13724
+
+Noble, D.W.A., Lagisz, M., O'Dea, R.E. & Nakagawa, S. (2017) Nonindependence and sensitivity analyses in ecological and evolutionary meta-analyses. *Molecular Ecology*, 26, 2410-2425. https://doi.org/10.1111/mec.14031
+
+O'Dea, R.E., Lagisz, M., Jennions, M.D., Koricheva, J., Noble, D.W.A., Parker, T.H. *et al*. (2021) Preferred reporting items for systematic reviews and meta-analyses in ecology and evolutionary biology: a PRISMA extension. *Biological Reviews*, 96, 1695-1722. https://doi.org/10.1111/brv.12721
+
+Piggott, J.J., Townsend, C.R. & Matthaei, C.D. (2015) Reconceptualizing synergism and antagonism among multiple stressors. *Ecology and Evolution*, 5, 1538-1547. https://doi.org/10.1002/ece3.1465
+
+Pottier, P., Burke, S., Zhang, R.Y., Noble, D.W., Schwanz, L.E., Drobniak, S.M., & Nakagawa, S. (2022). Developmental plasticity in thermal tolerance: Ontogenetic variation, persistence, and future directions. *Ecology Letters*, 25(10), 2245-2268. https://doi.org/10.1111/ele.14083
+
+Viechtbauer, W. (2010) Conducting meta-analyses in R with the metafor. *Journal of Statistical Software*, 36, 1-48. https://doi.org/10.18637/jss.v036.i03
+
+Vila, M., Espinar, J.L., Hejda, M., Hulme, P.E., Jarosik, V., Maron, J.L. *et al*. (2011). Ecological impacts of invasive alien plants: A meta-analysis of their effects on species, communities and ecosystems. *Ecology Letters*, 14, 702-708. https://doi.org/10.1111/j.1461-0248.2011.01628.x 
+
+Westgate, M.J. (2019) revtools: an R package to support article screening for evidence synthesis. *Research Synthesis Methods*, 10, 606-614. https://doi.org/10.1002/jrsm.1374
+
+# Data Sources
+
+List of the research studies included in the present meta-analysis.
+
+Ballari, S.A., Valenzuela, A.E. & Nunez, M. A. (2020) Interactions between wild boar and cattle in Patagonian temperate forest: cattle impacts are worse when alone than with wild boar. *Biological Invasions*, 22, 1681-1689. https://doi.org/10.1007/s10530-020-02212-w
+
+Boone, M.D., Semlitsch, R.D., Little, E.E. & Doyle, M.C. (2007) Multiple stressors in amphibian communities: effects of chemical contamination, bullfrogs, and fish. *Ecological Applications*, 17, 291-301. https://doi.org/10.1890/1051-0761(2007)017[0291:MSIACE]2.0.CO;2
+
+Braga, R.R., Ribeiro, V.M., Padial, A.A., Thomaz, S.M., Affonso, I.D.P., Wojciechowski, J. *et al*. (2020) Invasional meltdown: an experimental test and a framework to distinguish synergistic, additive, and antagonistic effects. *Hydrobiologia*, 847, 1603-1618. https://doi.org/10.1007/s10750-019-04107-x
+
+Cameron, E.K., Knysh, K.M., Proctor, H.C. & Bayne, E.M. (2013). Influence of two exotic earthworm species with different foraging strategies on abundance and composition of boreal microarthropods. *Soil Biology and Biochemistry*, 57, 334-340. https://doi.org/10.1016/j.soilbio.2012.07.010
+
+Cope, C.G., Eysenbach, S.R., Faidiga, A.S., Hausman, C.E., Medeiros, J.S., Murphy, J.E. & Burns, J.H. (2021) Potential interactive effects between invasive *Lumbricus terrestris* earthworms and the invasive plant *Alliaria petiolata* on a native plant *Podophyllum peltatum* in northeastern Ohio, USA. *AoB Plants*, 13, plaa073. https://doi.org/10.1093/aobpla/plaa073
+
+Cushman, J. & Gaffney, K.A. (2010) Community-level consequences of invasion: impacts of exotic clonal plants on riparian vegetation. *Biological Invasions*, 12(8), 2765-2776. https://doi.org/10.1007/s10530-009-9682-2
+
+Fryxell, D.C., Diluzio, A.R., Friedman, M.A., Menge, N.A. & Palkovacs, E.P. (2016) Cross-habitat effects shape the ecosystem consequences of co-invasion by a pelagic and a benthic consumer. *Oecologia*, 182, 519-528. https://doi.org/10.1007/s00442-016-3663-9
+
+Gao, J., Yang, C., Zhang, Z., Liu, Z. & Jeppesen, E. (2021) Effects of co-occurrence of invading *Procambarus clarkii* and *Pomacea canaliculata* on *Vallisneria denseserrulata*-dominated clear-water ecosystems: a mesocosm approach. *Knowledge and Management of Aquatic Ecosystems, 422, 29. https://doi.org/10.1051/kmae/2021029
+
+Griffen, B.D. (2006) Detecting emergent effects of multiple predator species. *Oecologia*, 14, 702-709. https://doi.org/10.1007/s00442-006-0414-3
+
+Griffen, B.D. & Byers, J.E. (2009) Community impacts of two invasive crabs: the interactive roles of density, prey recruitment, and indirect effects. *Biological Invasions*, 11(4), 927-940. https://doi.org/10.1007/s10530-008-9305-3
+
+Jackson, M.C., Jones, T., Milligan, M., Sheath, D., Taylor, J., Ellis, A. *et al*. (2014) Niche differentiation among invasive crayfish and their impacts on ecosystem structure and functioning. *Freshwater Biology*, 59, 1123-1135. https://doi.org/10.1111/fwb.12333
+
+Johnson, P.T., Olden, J.D., Solomon, C.T. & Vander Zanden, M.J. (2009) Interactions among invaders: community and ecosystem effects of multiple invasive species in an experimental aquatic system. *Oecologia*, 159, 161-170. https://doi.org/10.1007/s00442-008-1176-x
+
+Kiesecker, J.M. & Blaustein, A. R. (1998) Effects of introduced bullfrogs and smallmouth bass on microhabitat use, growth, and survival of native red-legged frogs (*Rana aurora*). *Conservation biology*, 12, 776-787. https://doi.org/10.1111/j.1523-1739.1998.97125.x
+
+Kuebbing, S.E., Classen, A.T. & Simberloff, D. (2014) Two co-occurring invasive woody shrubs alter soil properties and promote subdominant invasive species. *Journal of Applied Ecology*, 51, 124-133.  https://doi.org/10.1111/1365-2664.12161
+
+Kuebbing, S.E., Patterson, C.M., Classen, A.T. & Simberloff, D. (2016) Co-occurring nonnative woody shrubs have additive and non-additive soil legacies. *Ecological Applications*, 26, 1896-1906.  https://doi.org/10.1890/15-1931.1
+
+Kuhns, L.A. & Berg, M.B. (1999) Benthic invertebrate community responses to round goby (*Neogobius melanostomus*) and zebra mussel (*Dreissena polymorpha*) invasion in southern Lake Michigan. *Journal of Great Lakes Research*, 25, 910-917. https://doi.org/10.1016/S0380-1330(99)70788-4
+
+Lawler, S.P., Dritz, D., Strange, T. & Holyoak, M. (1999) Effects of introduced mosquitofish and bullfrogs on the threatened California red-legged frog. *Conservation Biology*, 13, 613-622. https://doi.org/10.1046/j.1523-1739.1999.98075.x
+
+Lenda, M., Skorka, P., Knops, J., Zmihorski, M., Gaj, R., Moron, D. *et al*. (2019) Multispecies invasion reduces the negative impact of single alien plant species on native flora. *Diversity and Distributions*, 25, 951-962.  https://doi.org/10.1111/ddi.12902
+
+Mahla, N. & Mlambo, D. (2019) Influence of two co-occurring invasive plant species on resident woody species and surface soil properties in Chipinge Safari Area, Zimbabwe. *Tropical Ecology*, 60, 129-139. https://doi.org/10.1007/s42965-019-00016-1
+
+Murali, K.S. & Setty, R.S. (2001) Effect of weeds *Lantana camara* and *Chromelina odorata* growth on the species diversity, regeneration and stem density of tree and shrub layer in BRT sanctuary. *Current Science*, 80, 675-678. https://www.jstor.org/stable/24104171
+
+Nurkse, K., Kotta, J., Ratsep, M., Kotta, I. & Kreitsberg, R. (2018) Experimental evaluation of the effects of the novel predators, round goby and mud crab on benthic invertebrates in the Gulf of Riga, Baltic Sea. *Journal of the Marine Biological Association of the United Kingdom*, 98, 25-31. https://doi.org/10.1017/S0025315417001965
+
+Nystrom, P., Svensson, O., Lardner, B., Bronmark, C. & Graneli, W. (2001) The influence of multiple introduced predators on a littoral pond community. *Ecology*, 82, 1023-1039. https://doi.org/10.1890/0012-9658(2001)082[1023:TIOMIP]2.0.CO;2
+
+Oschrin, E. & Reynolds, H.L. (2019) Co-occurring invasive plant interactions do not predict the impacts of invasion in experimental tallgrass prairie communities. *Biological Invasions*, 21, 2417-2430. https://doi.org/10.1007/s10530-019-01984-0
+
+Porter-Whitaker, A.E., Rehage, J.S., Liston, S.E. & Loftus, W.F. (2012) Multiple predator effects and native prey responses to two non-native Everglades cichlids. *Ecology of Freshwater Fish*, 21, 375-385.  https://doi.org/10.1111/j.1600-0633.2012.00557.x
+
+Preisser, E.L. & Elkinton, J.S. (2008) Exploitative competition between invasive herbivores benefits a native host plant. *Ecology*, 89, 2671-2677.  https://doi.org/10.1890/08-0299.1
+
+Preston, D.L., Henderson, J.S. & Johnson, P.T. (2012) Community ecology of invasions: direct and indirect effects of multiple invasive species on aquatic communities. *Ecology*, 93, 1254-1261. https://doi.org/10.1890/11-1821.1
+
+Rudnick, D., & Resh, V. (2005). Stable isotopes, mesocosms and gut content analysis demonstrate trophic differences in two invasive decapod crustacea. *Freshwater Biology*, 50(8), 1323-1336. https://doi.org/10.1111/j.1365-2427.2005.01398.x
+
+Ross, D.J., Johnson, C.R., Hewitt, C.L. & Ruiz, G.M. (2004) Interaction and impacts of two introduced species on a soft-sediment marine assemblage in SE Tasmania. *Marine Biology*, 144, 747-756. https://doi.org/10.1007/s00227-003-1223-4
+
+Smith, K.G. (2005) Effects of nonindigenous tadpoles on native tadpoles in Florida: evidence of competition. *Biological Conservation*, 123, 433-441. https://doi.org/10.1016/j.biocon.2005.01.005
+
+Tekiela, D.R. & Barney, J.N. (2017) Co-invasion of similar invaders results in analogous ecological impact niches and no synergies. *Biological Invasions*, 19, 147-159. https://doi.org/10.1007/s10530-016-1269-0
+
+Wang, C., Wei, M., Wang, S., Wu, B. & Cheng, H. (2020) *Erigeron annuus* (L.) Pers. and *Solidago canadensis* L. antagonistically affect community stability and community invasibility under the co-invasion condition. *Science of the Total Environment*, 716, 137128. https://doi.org/10.1016/j.scitotenv.2020.137128
+
+Wang, C., Zhou, J., Liu, J., Jiang, K., Xiao, H. & Du, D. (2018) Responses of the soil fungal communities to the co-invasion of two invasive species with different cover classes. *Plant Biology*, 20, 151-159. https://doi.org/10.1111/plb.12646
+
+Wei, M., Wang, S., Xiao, H.G., Wu, B.D., Jiang, K. & Wang, C.Y. (2020) Co-invasion of daisy fleabane and Canada goldenrod pose synergistic impacts on soil bacterial richness. *Journal of Central South University*, 27, 1790-1801. https://doi.org/10.1007/s11771-020-4408-9
+
+Wei, M., Wang, S., Xiao, H., Wu, B., Jiang, K., Du, D. & Wang, C. (2020). Stand-alone or co-occurring invasive plant species do not modify the diversity of the soil N2-fixing bacterial community. *Plant Ecology & Diversity*, 13(3-4), 277-287. https://doi.org/10.1080/17550874.2020.1729887
+
+Wei, M., Wang, S., Wu, B., Cheng, H. & Wang, C. (2020) Combined allelopathy of Canada goldenrod and horseweed on the seed germination and seedling growth performance of lettuce. *Landscape and Ecological Engineering*, 16, 299-306. https://doi.org/10.1007/s11355-020-00421-y
+
+Zenni, R.D., da Cunha, W.L., Musso, C., de Souza, J.V., Nardoto, G.B. & Miranda, H.S. (2020) Synergistic impacts of co-occurring invasive grasses cause persistent effects in the soil-plant system after selective removal. *Functional Ecology*, 34, 1102-1112.  https://doi.org/10.1111/1365-2435.13524
+
+
